@@ -1,0 +1,163 @@
+# ─────────────────────────────────────────
+# Netrix — .gitignore
+# Purpose: Comprehensive ignore rules for the Netrix platform
+# Author: Netrix Development Team
+# ─────────────────────────────────────────
+
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+*.whl
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+venv/
+env/
+.env/
+.venv/
+ENV/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# Python testing
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+pytestdebug.log
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# mypy / type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+
+# ========================
+# Node / React
+# ========================
+node_modules/
+frontend/node_modules/
+frontend/build/
+frontend/dist/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp
+.pnp.js
+
+# ========================
+# Security Tool Specific
+# ========================
+# Scan results (may contain sensitive data)
+scan_results/
+*.nmap
+*.gnmap
+*.xml
+scans_output/
+
+# Generated reports (may contain sensitive findings)
+reports/
+*.pdf
+*.html
+!frontend/public/*.html
+!frontend/src/**/*.html
+
+# CVE cache and offline database files
+data/cve_offline.json
+data/cve_cache/
+*.cve.json
+
+# Nmap scripts cache
+nse_scripts_cache/
+
+# ========================
+# Docker
+# ========================
+.docker/
+docker-compose.override.yml
+
+# ========================
+# Database
+# ========================
+*.sql
+*.sqlite
+*.sqlite3
+*.db
+mysql_data/
+redis_data/
+
+# ========================
+# IDE / Editor
+# ========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.settings/
+
+# ========================
+# OS Files
+# ========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ========================
+# Log Files
+# ========================
+logs/
+*.log
+log/
+
+# ========================
+# Miscellaneous
+# ========================
+*.bak
+*.tmp
+*.temp
+*.orig
+*.pid
+*.seed
+*.pid.lock

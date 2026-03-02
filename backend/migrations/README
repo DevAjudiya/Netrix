@@ -1,0 +1,53 @@
+# ─────────────────────────────────────────
+# Netrix — Alembic Migrations Guide
+# ─────────────────────────────────────────
+
+## Quick Reference
+
+### Create a new migration (auto-detect model changes)
+```bash
+cd backend
+alembic revision --autogenerate -m "describe your change"
+```
+
+### Run all pending migrations
+```bash
+alembic upgrade head
+```
+
+### Rollback the last migration
+```bash
+alembic downgrade -1
+```
+
+### Rollback ALL migrations (return to empty DB)
+```bash
+alembic downgrade base
+```
+
+### Show current migration status
+```bash
+alembic current
+```
+
+### Show migration history
+```bash
+alembic history --verbose
+```
+
+### Generate SQL without executing (offline mode)
+```bash
+alembic upgrade head --sql
+```
+
+---
+
+## Notes
+
+- Always review auto-generated migrations before applying them.
+- Alembic uses `compare_type=True` so column type changes are
+  detected automatically.
+- The database URL is loaded from `app.config.Settings.DATABASE_URL`
+  at runtime — there is no need to hard-code it in `alembic.ini`.
+- Models must be imported in `migrations/env.py` for auto-generation
+  to work. See `app/models/__init__.py` for the correct import order.

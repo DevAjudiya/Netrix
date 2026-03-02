@@ -1,0 +1,128 @@
+# ─────────────────────────────────────────
+# Netrix — docker-compose.yml
+# Purpose: Full service orchestration for the Netrix platform
+# Author: Netrix Development Team
+# ─────────────────────────────────────────
+
+version: "3.9"
+
+services:
+  # ──────────────────────────────────────
+  # Netrix Backend — FastAPI application
+  # ──────────────────────────────────────
+  netrix-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: netrix-backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - MYSQL_HOST=mysql
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - reports_data:/app/reports
+      - ./backend:/app
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    networks:
+      - netrix-network
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+
+  # ──────────────────────────────────────
+  # Netrix Frontend — React application
+  # ──────────────────────────────────────
+  netrix-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: netrix-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - netrix-backend
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000/api/v1
+    restart: unless-stopped
+    networks:
+      - netrix-network
+
+  # ──────────────────────────────────────
+  # MySQL 8.0 — Primary database
+  # ──────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: netrix-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-netrix_root_secret}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-netrix_db}
+      MYSQL_USER: ${MYSQL_USER:-netrix_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-netrix_password}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-netrix_root_secret}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - netrix-network
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+
+  # ──────────────────────────────────────
+  # Redis 7 — Caching and rate limiting
+  # ──────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: netrix-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - netrix-network
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+# ──────────────────────────────────────
+# Named Volumes
+# ──────────────────────────────────────
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  reports_data:
+    driver: local
+
+# ──────────────────────────────────────
+# Network
+# ──────────────────────────────────────
+networks:
+  netrix-network:
+    driver: bridge
+    name: netrix-network

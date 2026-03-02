@@ -1,0 +1,177 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Base Styles ─── */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: #0F172A;
+  color: #E2E8F0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+/* ─── Custom Scrollbar ─── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0F172A;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 #0F172A;
+}
+
+/* ─── Custom Utilities ─── */
+@layer utilities {
+  .glass-card {
+    @apply bg-netrix-card/80 backdrop-blur-xl border border-netrix-border/50 rounded-xl;
+  }
+
+  .glass-card-hover {
+    @apply glass-card transition-all duration-300 hover:border-netrix-accent/30 hover:shadow-lg hover:shadow-netrix-accent/5;
+  }
+
+  .gradient-accent {
+    @apply bg-gradient-to-r from-cyan-500 to-blue-600;
+  }
+
+  .gradient-accent-hover {
+    @apply gradient-accent hover:from-cyan-400 hover:to-blue-500 transition-all duration-300;
+  }
+
+  .text-gradient {
+    @apply bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent;
+  }
+
+  .input-dark {
+    @apply w-full bg-netrix-bg border border-netrix-border rounded-lg px-4 py-3 text-netrix-text placeholder-netrix-muted/50 focus:outline-none focus:border-netrix-accent focus:ring-1 focus:ring-netrix-accent/30 transition-all duration-200;
+  }
+
+  .btn-primary {
+    @apply gradient-accent-hover text-white font-semibold py-3 px-6 rounded-lg shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/30 active:scale-[0.98] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100;
+  }
+
+  .btn-secondary {
+    @apply bg-netrix-card border border-netrix-border text-netrix-text font-medium py-2.5 px-5 rounded-lg hover:bg-netrix-border/50 hover:border-netrix-muted/30 active:scale-[0.98] transition-all duration-200;
+  }
+
+  .btn-danger {
+    @apply bg-red-600/20 border border-red-500/30 text-red-400 font-medium py-2.5 px-5 rounded-lg hover:bg-red-600/30 hover:border-red-500/50 active:scale-[0.98] transition-all duration-200;
+  }
+}
+
+/* ─── Scan Line Animation ─── */
+.scan-line-effect {
+  position: relative;
+  overflow: hidden;
+}
+
+.scan-line-effect::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(6, 182, 212, 0.05),
+    transparent
+  );
+  animation: scanLine 3s linear infinite;
+}
+
+@keyframes scanLine {
+  0% { left: -100%; }
+  100% { left: 100%; }
+}
+
+/* ─── Glow Effects ─── */
+.glow-cyan {
+  box-shadow: 0 0 20px rgba(6, 182, 212, 0.15), 0 0 60px rgba(6, 182, 212, 0.05);
+}
+
+.glow-red {
+  box-shadow: 0 0 20px rgba(220, 38, 38, 0.15), 0 0 60px rgba(220, 38, 38, 0.05);
+}
+
+/* ─── Progress Bar ─── */
+.progress-bar {
+  @apply h-3 bg-netrix-bg rounded-full overflow-hidden;
+}
+
+.progress-bar-fill {
+  @apply h-full rounded-full transition-all duration-500 ease-out;
+  background: linear-gradient(90deg, #06B6D4, #3B82F6);
+}
+
+/* ─── Table Styles ─── */
+.table-dark th {
+  @apply px-4 py-3 text-left text-xs font-semibold text-netrix-muted uppercase tracking-wider bg-netrix-bg/50;
+}
+
+.table-dark td {
+  @apply px-4 py-3 text-sm text-netrix-text whitespace-nowrap;
+}
+
+.table-dark tr {
+  @apply border-b border-netrix-border/30 transition-colors duration-150;
+}
+
+.table-dark tbody tr:hover {
+  @apply bg-netrix-accent/5;
+}
+
+/* ─── Pulse Dot ─── */
+.pulse-dot {
+  @apply relative;
+}
+
+.pulse-dot::before {
+  content: '';
+  @apply absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-green-500 rounded-full;
+  animation: pulse-ring 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse-ring {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.5); }
+}
+
+/* ─── Modal Overlay ─── */
+.modal-overlay {
+  @apply fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50;
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
