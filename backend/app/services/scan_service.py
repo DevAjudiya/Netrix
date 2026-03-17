@@ -18,7 +18,12 @@ from app.core.exceptions import (
 )
 from app.core.validators import validate_target
 from app.models.scan import Scan
+from app.models.host import Host
+from app.models.port import Port
+from app.scanner.nmap_engine import NmapEngine, ScanType
+from app.services.cve_service import CVEService
 from app.scanner.scan_manager import ScanManager
+import asyncio
 
 logger = logging.getLogger("netrix")
 
@@ -105,25 +110,152 @@ class ScanService:
 
     async def start_scan_async(
         self,
-        scan: Scan,
-        scan_manager: ScanManager,
-    ) -> None:
+        scan_id: str,
+        target: str,
+        scan_type: str,
+        user_id: int,
+        db=None,
+    ):
         """
-        Start a scan asynchronously via the ScanManager.
+        Execute the scan in the background.
 
-        Args:
-            scan:         The Scan ORM object to start.
-            scan_manager: The shared ScanManager instance.
+        IMPORTANT: This method creates its OWN database session
+        using SessionLocal() so it is fully independent of the
+        request lifecycle. The ``db`` parameter is accepted for
+        backward compatibility but is IGNORED.
         """
-        await scan_manager.launch_scan(
-            target=scan.target,
-            scan_type=scan.scan_type,
-            scan_id=scan.scan_id,
-            user_id=scan.user_id,
-            custom_args=scan.scan_args or "",
-            custom_ports="",
-        )
-        logger.info("[NETRIX] Scan %s queued for async execution.", scan.scan_id)
+        from app.database.session import SessionLocal
+        import traceback
+
+        own_db = SessionLocal()
+        scan = None
+        try:
+            # Step 1: Get scan from DB
+            scan = own_db.query(Scan).filter(
+                Scan.scan_id == scan_id
+            ).first()
+
+            if not scan:
+                print(f"[NETRIX] Scan {scan_id} not found!")
+                return
+
+            # Step 2: Update status to running
+            scan.status = "running"
+            scan.started_at = datetime.now(timezone.utc)
+            scan.progress = 10
+            own_db.commit()
+            print(f"[NETRIX] Scan {scan_id} started!")
+
+            # Step 3: Run Nmap in thread executor
+            engine = NmapEngine()
+            loop = asyncio.get_event_loop()
+
+            summary = await loop.run_in_executor(
+                None,
+                lambda: engine.run_scan(
+                    target=target,
+                    scan_type=ScanType(scan_type),
+                    scan_id=scan_id,
+                ),
+            )
+
+            # Step 4: Update progress
+            scan.progress = 70
+            own_db.commit()
+
+            # Step 5: Save each host
+            hosts_saved = 0
+            ports_saved = 0
+            for host_result in summary.hosts:
+                db_host = Host(
+                    scan_id=scan.id,
+                    ip_address=host_result.ip,
+                    hostname=host_result.hostname or "",
+                    status=host_result.status or "up",
+                    os_name=getattr(
+                        host_result.os_info, "name", ""
+                    ) or "",
+                    os_accuracy=int(getattr(
+                        host_result.os_info, "accuracy", 0
+                    ) or 0),
+                    os_family=getattr(
+                        host_result.os_info, "os_family", ""
+                    ) or "",
+                    os_generation=getattr(
+                        host_result.os_info, "os_generation", ""
+                    ) or "",
+                    os_cpe=getattr(
+                        host_result.os_info, "cpe", ""
+                    ) or "",
+                    mac_address=host_result.mac_address or "",
+                    mac_vendor=host_result.mac_vendor or "",
+                    risk_score=host_result.risk_score or 0,
+                    risk_level=host_result.risk_level or "info",
+                    uptime=str(host_result.uptime or ""),
+                    tcp_sequence=str(
+                        getattr(host_result, "tcp_sequence", "")
+                        or ""
+                    ),
+                )
+                own_db.add(db_host)
+                own_db.flush()  # Get host ID
+                hosts_saved += 1
+
+                # Step 6: Save ports for this host
+                for service in host_result.services:
+                    db_port = Port(
+                        host_id=db_host.id,
+                        port_number=int(service.port),
+                        protocol=service.protocol or "tcp",
+                        state=service.state or "open",
+                        service_name=service.service_name or "",
+                        product=service.product or "",
+                        version=service.version or "",
+                        extra_info=service.extra_info or "",
+                        cpe=service.cpe or "",
+                        nse_output=service.nse_scripts
+                        if service.nse_scripts
+                        else {},
+                        is_critical_port=getattr(
+                            service, "is_critical_port", False
+                        ),
+                    )
+                    own_db.add(db_port)
+                    ports_saved += 1
+
+            # Step 7: Update scan record
+            scan.status = "completed"
+            scan.completed_at = datetime.now(timezone.utc)
+            scan.total_hosts = summary.total_hosts or 0
+            scan.hosts_up = summary.hosts_up or 0
+            scan.hosts_down = summary.hosts_down or 0
+            scan.progress = 100
+            own_db.commit()
+
+            print(f"[NETRIX] ✅ Scan {scan_id} complete!")
+            print(f"[NETRIX]    Hosts saved: {hosts_saved}")
+            print(f"[NETRIX]    Ports saved: {ports_saved}")
+
+        except Exception as e:
+            print(f"[NETRIX] ❌ Scan error: {e}")
+            traceback.print_exc()
+
+            try:
+                scan = own_db.query(Scan).filter(
+                    Scan.scan_id == scan_id
+                ).first()
+                if scan:
+                    scan.status = "failed"
+                    scan.error_message = str(e)[:2000]
+                    scan.progress = 0
+                    scan.completed_at = datetime.now(timezone.utc)
+                    own_db.commit()
+            except Exception as db_err:
+                print(f"[NETRIX] ❌ DB error: {db_err}")
+                own_db.rollback()
+        finally:
+            own_db.close()
+            print(f"[NETRIX] DB session closed for scan {scan_id}")
 
     def get_scan(self, scan_id: int, user_id: int) -> Scan:
         """
@@ -255,11 +387,7 @@ class ScanService:
         """
         scan = self.get_scan(scan_id, user_id)
 
-        if scan.status in ("pending", "running"):
-            raise ScanAlreadyRunningException(
-                message="Cannot delete a scan that is still in progress.",
-                details=f"Scan {scan.scan_id} is currently '{scan.status}'.",
-            )
+        # Removed condition to allow users to force delete stuck pending/running scans
 
         self.db.delete(scan)
         self.db.commit()

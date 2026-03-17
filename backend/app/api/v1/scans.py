@@ -8,16 +8,24 @@
 import asyncio
 import logging
 import math
-from typing import Optional
+import traceback
+import uuid
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    APIRouter, BackgroundTasks, Depends,
+    HTTPException, Query, WebSocket,
+    WebSocketDisconnect, status,
+)
 from sqlalchemy.orm import Session
+from typing import List, Optional
 
 from app.core.security import get_current_user
 from app.database.session import get_db
 from app.dependencies import get_scan_manager
 from app.models.host import Host
 from app.models.port import Port
+from app.models.scan import Scan
 from app.models.vulnerability import Vulnerability
 from app.scanner.scan_manager import ScanManager
 from app.schemas.scan import ScanCreate, ScanList, ScanResponse, ScanStatus
@@ -28,6 +36,191 @@ logger = logging.getLogger("netrix")
 router = APIRouter()
 
 
+# ─────────────────────────────────────────
+# MODULE-LEVEL background task function
+# MUST be outside the router / class
+# Creates its own DB session via SessionLocal
+# ─────────────────────────────────────────
+async def run_scan_background(
+    scan_id: str,
+    target: str,
+    scan_type: str,
+    user_id: int,
+):
+    """
+    Background task that runs the actual Nmap scan.
+
+    This function is invoked by FastAPI BackgroundTasks *after*
+    the HTTP response has already been sent. It creates its OWN
+    database session using SessionLocal() so it is completely
+    independent of the request lifecycle.
+    """
+    from app.database.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        print(f"[NETRIX] 🔍 Starting background scan: {scan_id}")
+
+        # ── Step 1: Retrieve scan record ─────────────────────────
+        scan = db.query(Scan).filter(
+            Scan.scan_id == scan_id
+        ).first()
+
+        if not scan:
+            print(f"[NETRIX] ❌ Scan {scan_id} not found in database!")
+            return
+
+        # ── Step 2: Mark as running ──────────────────────────────
+        scan.status = "running"
+        scan.started_at = datetime.now(timezone.utc)
+        scan.progress = 5
+        db.commit()
+        print(f"[NETRIX] Scan {scan_id} → running")
+
+        # ── Step 3: Execute the actual Nmap scan ─────────────────
+        from app.scanner.nmap_engine import NmapEngine, ScanType
+
+        engine = NmapEngine()
+
+        # Map scan type string to ScanType enum
+        scan_type_map = {
+            "quick": ScanType.QUICK,
+            "stealth": ScanType.STEALTH,
+            "full": ScanType.FULL,
+            "aggressive": ScanType.AGGRESSIVE,
+            "vulnerability": ScanType.VULNERABILITY,
+            "custom": ScanType.QUICK,
+        }
+
+        nmap_scan_type = scan_type_map.get(
+            scan_type.lower(),
+            ScanType.QUICK,
+        )
+
+        print(f"[NETRIX] Running nmap on {target} (type={scan_type})")
+
+        # run_scan() is BLOCKING — run in thread executor
+        loop = asyncio.get_event_loop()
+        summary = await loop.run_in_executor(
+            None,
+            lambda: engine.run_scan(
+                target=target,
+                scan_type=nmap_scan_type,
+                scan_id=scan_id,
+            ),
+        )
+
+        print(
+            f"[NETRIX] Nmap scan completed! "
+            f"Hosts found: {len(summary.hosts)}"
+        )
+
+        # ── Step 4: Update progress ──────────────────────────────
+        scan.progress = 80
+        db.commit()
+
+        # ── Step 5: Save hosts to database ───────────────────────
+        saved_hosts = 0
+        saved_ports = 0
+
+        for host_result in summary.hosts:
+            print(f"[NETRIX] Saving host: {host_result.ip}")
+
+            db_host = Host(
+                scan_id=scan.id,
+                ip_address=host_result.ip,
+                hostname=host_result.hostname or "",
+                status=host_result.status or "up",
+                os_name=getattr(
+                    host_result.os_info, "name", ""
+                ) or "",
+                os_accuracy=int(getattr(
+                    host_result.os_info, "accuracy", 0
+                ) or 0),
+                os_family=getattr(
+                    host_result.os_info, "os_family", ""
+                ) or "",
+                os_generation=getattr(
+                    host_result.os_info, "os_generation", ""
+                ) or "",
+                os_cpe=getattr(
+                    host_result.os_info, "cpe", ""
+                ) or "",
+                mac_address=host_result.mac_address or "",
+                mac_vendor=host_result.mac_vendor or "",
+                uptime=str(host_result.uptime or ""),
+                tcp_sequence=str(
+                    getattr(host_result, "tcp_sequence", "")
+                    or ""
+                ),
+                risk_score=host_result.risk_score or 0,
+                risk_level=host_result.risk_level or "info",
+            )
+            db.add(db_host)
+            db.flush()  # Get db_host.id for port FK
+            saved_hosts += 1
+
+            # ── Step 6: Save ports for this host ─────────────────
+            for service in host_result.services:
+                db_port = Port(
+                    host_id=db_host.id,
+                    port_number=int(service.port),
+                    protocol=service.protocol or "tcp",
+                    state=service.state or "open",
+                    service_name=service.service_name or "",
+                    product=service.product or "",
+                    version=service.version or "",
+                    extra_info=service.extra_info or "",
+                    cpe=service.cpe or "",
+                    nse_output=service.nse_scripts
+                    if service.nse_scripts
+                    else {},
+                    is_critical_port=getattr(
+                        service, "is_critical_port", False
+                    ),
+                )
+                db.add(db_port)
+                saved_ports += 1
+
+        # ── Step 7: Final scan record update ─────────────────────
+        scan.status = "completed"
+        scan.completed_at = datetime.now(timezone.utc)
+        scan.total_hosts = summary.total_hosts or 0
+        scan.hosts_up = summary.hosts_up or 0
+        scan.hosts_down = summary.hosts_down or 0
+        scan.progress = 100
+        db.commit()
+
+        print(f"[NETRIX] ✅ Scan {scan_id} COMPLETE!")
+        print(f"[NETRIX]    Hosts saved: {saved_hosts}")
+        print(f"[NETRIX]    Ports saved: {saved_ports}")
+
+    except Exception as e:
+        print(f"[NETRIX] ❌ Background scan error: {e}")
+        traceback.print_exc()
+
+        # Mark scan as failed
+        try:
+            scan = db.query(Scan).filter(
+                Scan.scan_id == scan_id
+            ).first()
+            if scan:
+                scan.status = "failed"
+                scan.error_message = str(e)[:2000]
+                scan.progress = 0
+                scan.completed_at = datetime.now(timezone.utc)
+                db.commit()
+        except Exception as db_error:
+            print(f"[NETRIX] ❌ DB error while marking failed: {db_error}")
+            db.rollback()
+    finally:
+        db.close()
+        print(f"[NETRIX] DB session closed for scan {scan_id}")
+
+
+# ─────────────────────────────────────────
+# POST /scans/ — Create and launch a scan
+# ─────────────────────────────────────────
 @router.post(
     "/",
     response_model=ScanResponse,
@@ -43,18 +236,9 @@ async def create_scan(
     """
     Launch a new network scan against a target.
 
-    The target is validated and a scan record is created in the database.
-    The scan is then started asynchronously via the ScanManager thread pool.
-
-    Args:
-        scan_data: Scan creation payload with target and scan_type.
-
-    Returns:
-        ScanResponse: The newly created scan record.
-
-    Raises:
-        InvalidTargetException: If the target is invalid.
-        ScanAlreadyRunningException: If a scan is already running for this target.
+    Creates a scan record in the database ('pending' state) and
+    launches the Nmap scan via ScanManager so that WebSocket
+    events are properly streamed to connected clients.
     """
     service = ScanService(db)
     scan = service.create_scan(
@@ -65,16 +249,26 @@ async def create_scan(
         custom_ports=scan_data.custom_ports,
     )
 
-    # Start the scan asynchronously
-    await service.start_scan_async(scan, scan_manager)
+    # Launch via ScanManager — enables WebSocket event streaming
+    await scan_manager.launch_scan(
+        target=scan.target,
+        scan_type=scan.scan_type,
+        scan_id=scan.scan_id,
+        user_id=current_user.id,
+        custom_args=scan_data.custom_args or "",
+        custom_ports=scan_data.custom_ports or "",
+    )
 
     logger.info(
-        "[NETRIX] Scan %s created and queued by user '%s'.",
+        "[NETRIX] Scan %s created and launched by user '%s'.",
         scan.scan_id, current_user.username,
     )
     return scan
 
 
+# ─────────────────────────────────────────
+# GET /scans/ — List scans (paginated)
+# ─────────────────────────────────────────
 @router.get(
     "/",
     response_model=ScanList,
@@ -94,11 +288,6 @@ async def list_scans(
 ):
     """
     List all scans for the current user with pagination.
-
-    Supports optional status filtering and configurable page size.
-
-    Returns:
-        ScanList: Paginated list of scan records.
     """
     service = ScanService(db)
     scans, total = service.list_scans(
@@ -117,141 +306,131 @@ async def list_scans(
     )
 
 
-@router.get(
-    "/{scan_id}",
-    response_model=ScanResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Get scan details",
-)
+# ─────────────────────────────────────────
+# GET /scans/{scan_id} — Get single scan
+# ─────────────────────────────────────────
+@router.get("/{scan_id}")
 async def get_scan(
-    scan_id: int,
-    db: Session = Depends(get_db),
+    scan_id: str,
     current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
-    """
-    Get detailed information about a specific scan.
+    """Retrieve a scan by scan_id (NETRIX_XXX) or numeric id."""
+    # Try string scan_id first (NETRIX_ABC123 format)
+    scan = db.query(Scan).filter(
+        Scan.scan_id == scan_id
+    ).first()
 
-    Returns:
-        ScanResponse: Full scan record including results summary.
+    # If not found, try numeric id
+    if not scan and scan_id.isdigit():
+        scan = db.query(Scan).filter(
+            Scan.id == int(scan_id)
+        ).first()
 
-    Raises:
-        ScanNotFoundException: If the scan does not exist or does not
-                               belong to the user.
-    """
-    service = ScanService(db)
-    return service.get_scan(scan_id, current_user.id)
+    if not scan:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Scan {scan_id} not found",
+        )
+
+    return scan.to_dict()
 
 
-@router.get(
-    "/{scan_id}/status",
-    response_model=ScanStatus,
-    status_code=status.HTTP_200_OK,
-    summary="Get scan status",
-)
+# ─────────────────────────────────────────
+# GET /scans/{scan_id}/status — Lightweight status
+# ─────────────────────────────────────────
+@router.get("/{scan_id}/status")
 async def get_scan_status(
-    scan_id: int,
-    db: Session = Depends(get_db),
+    scan_id: str,
     current_user=Depends(get_current_user),
-    scan_manager: ScanManager = Depends(get_scan_manager),
-):
-    """
-    Get lightweight live status of a scan.
-
-    Combines the database record with live progress from the ScanManager
-    for active scans.
-
-    Returns:
-        ScanStatus: Current scan status and progress percentage.
-    """
-    service = ScanService(db)
-    status_data = await service.get_scan_status(scan_id, current_user.id, scan_manager)
-    return ScanStatus(**status_data)
-
-
-@router.get(
-    "/{scan_id}/results",
-    status_code=status.HTTP_200_OK,
-    summary="Get scan results",
-)
-async def get_scan_results(
-    scan_id: int,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
 ):
-    """
-    Get full scan results including hosts and vulnerabilities.
+    """Get lightweight scan status for polling."""
+    scan = db.query(Scan).filter(
+        Scan.scan_id == scan_id
+    ).first()
 
-    Returns the scan record with nested host and vulnerability data.
-    Only available for completed scans.
-
-    Returns:
-        dict: Scan data with hosts and vulnerability counts.
-
-    Raises:
-        ScanNotFoundException: If the scan does not exist.
-    """
-    service = ScanService(db)
-    scan = service.get_scan(scan_id, current_user.id)
-
-    hosts = db.query(Host).filter(Host.scan_id == scan.id).all()
-    vulns = db.query(Vulnerability).filter(Vulnerability.scan_id == scan.id).all()
-
-    # Fetch ports for each host
-    host_ids = [h.id for h in hosts]
-    ports = db.query(Port).filter(Port.host_id.in_(host_ids)).all() if host_ids else []
-    ports_by_host = {}
-    for p in ports:
-        ports_by_host.setdefault(p.host_id, []).append(p)
+    if not scan:
+        raise HTTPException(404, "Not found")
 
     return {
-        "scan": scan.to_dict(),
-        "hosts": [
-            {
-                "id": h.id,
-                "ip_address": h.ip_address,
-                "hostname": h.hostname,
-                "status": h.status,
-                "os_name": h.os_name,
-                "risk_score": h.risk_score,
-                "risk_level": h.risk_level,
-                "ports": [
-                    {
-                        "port_number": p.port_number,
-                        "protocol": p.protocol,
-                        "state": p.state,
-                        "service_name": p.service_name,
-                        "product": p.product or "",
-                        "version": p.version or "",
-                        "is_critical_port": p.is_critical_port,
-                    }
-                    for p in sorted(
-                        ports_by_host.get(h.id, []),
-                        key=lambda x: x.port_number,
-                    )
-                ],
-            }
-            for h in hosts
-        ],
-        "vulnerabilities": [
-            {
-                "id": v.id,
-                "cve_id": v.cve_id,
-                "severity": v.severity,
-                "title": v.title,
-                "cvss_score": v.cvss_score,
-            }
-            for v in vulns
-        ],
-        "summary": {
-            "total_hosts": len(hosts),
-            "total_vulnerabilities": len(vulns),
-            "total_open_ports": sum(
-                1 for p in ports if p.state == "open"
-            ),
-        },
+        "scan_id": scan.scan_id,
+        "status": scan.status,
+        "progress": scan.progress or 0,
+        "started_at": str(scan.started_at)
+        if scan.started_at
+        else None,
+        "completed_at": str(scan.completed_at)
+        if scan.completed_at
+        else None,
+        "error_message": scan.error_message,
+        "total_hosts": scan.total_hosts or 0,
+        "hosts_up": scan.hosts_up or 0,
     }
 
 
+# ─────────────────────────────────────────
+# GET /scans/{scan_id}/results — Full results
+# ─────────────────────────────────────────
+@router.get("/{scan_id}/results")
+async def get_scan_results(
+    scan_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get full scan results with hosts, ports, and vulnerabilities."""
+    # Find scan (try string scan_id first)
+    scan = db.query(Scan).filter(
+        Scan.scan_id == scan_id
+    ).first()
+
+    # If not found, try numeric id
+    if not scan and scan_id.isdigit():
+        scan = db.query(Scan).filter(
+            Scan.id == int(scan_id)
+        ).first()
+
+    if not scan:
+        raise HTTPException(404, "Not found")
+
+    # Get all hosts
+    hosts = db.query(Host).filter(
+        Host.scan_id == scan.id
+    ).all()
+
+    hosts_data = []
+    for host in hosts:
+        ports = db.query(Port).filter(
+            Port.host_id == host.id
+        ).all()
+        vulns = db.query(Vulnerability).filter(
+            Vulnerability.host_id == host.id
+        ).all()
+
+        h = host.to_dict()
+        h["ports"] = [p.to_dict() for p in ports]
+        h["vulnerabilities"] = [
+            v.to_dict() for v in vulns
+        ]
+        hosts_data.append(h)
+
+    return {
+        "scan": scan.to_dict(),
+        "hosts": hosts_data,
+        "total_hosts": len(hosts_data),
+        "total_ports": sum(
+            len(h["ports"]) for h in hosts_data
+        ),
+        "total_vulnerabilities": sum(
+            len(h["vulnerabilities"])
+            for h in hosts_data
+        ),
+    }
+
+
+# ─────────────────────────────────────────
+# DELETE /scans/{scan_id} — Delete a scan
+# ─────────────────────────────────────────
 @router.delete(
     "/{scan_id}",
     status_code=status.HTTP_200_OK,
@@ -264,53 +443,123 @@ async def delete_scan(
 ):
     """
     Delete a completed or failed scan and all associated data.
-
-    Cannot delete scans that are still running or pending.
-
-    Returns:
-        dict: Confirmation message.
-
-    Raises:
-        ScanNotFoundException: If the scan does not exist.
-        ScanAlreadyRunningException: If the scan is still in progress.
     """
     service = ScanService(db)
     service.delete_scan(scan_id, current_user.id)
     return {"message": f"Scan {scan_id} deleted successfully."}
 
 
-@router.websocket("/{scan_id}/ws")
-async def scan_progress_ws(
+# ─────────────────────────────────────────
+# WebSocket /scans/ws/{scan_id} — Live progress
+# ─────────────────────────────────────────
+@router.websocket("/ws/{scan_id}")
+async def scan_websocket(
     websocket: WebSocket,
     scan_id: str,
-    scan_manager: ScanManager = Depends(get_scan_manager),
 ):
     """
-    WebSocket endpoint for real-time scan progress updates.
+    WebSocket endpoint for real-time scan event streaming.
 
-    Clients connect to ``/scans/{scan_id}/ws`` and receive JSON messages
-    with the scan's current progress until the scan completes.
+    Clients connect to ``/api/v1/scans/ws/{scan_id}?token=<jwt>``
+    and receive granular JSON events in real-time.
     """
+    # ── Step 1: Authenticate via query param ─────────────────
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=1008, reason="Missing token")
+        return
+
+    from app.core.security import verify_token_websocket
+    payload = verify_token_websocket(token)
+
+    if payload is None:
+        await websocket.close(code=1008, reason="Invalid token")
+        return
+
+    user_id = payload.get("user_id")
+    if not user_id:
+        await websocket.close(code=1008, reason="Invalid token payload")
+        return
+
+    # ── Step 2: Accept connection ────────────────────────────
     await websocket.accept()
-    logger.info("[NETRIX] WebSocket connected for scan %s.", scan_id)
+    logger.info("[NETRIX] WebSocket connected for scan %s (user=%s).", scan_id, user_id)
+
+    # ── Step 3: Get scan manager ─────────────────────────────
+    from app.dependencies import get_scan_manager_instance
+    scan_manager = get_scan_manager_instance()
+
+    # ── Step 4: Send connected event ─────────────────────────
+    await websocket.send_json({
+        "event": "connected",
+        "message": "🔗 WebSocket connected — streaming live events...",
+        "scan_id": scan_id,
+    })
+
+    # ── Step 5: Register event queue ─────────────────────────
+    event_queue = scan_manager.register_event_queue(scan_id)
 
     try:
+        no_activity_count = 0
+        max_no_activity = 150  # 150 × 2s = 5 minutes timeout
+
         while True:
-            live_status = scan_manager.get_scan_status(scan_id)
+            # Read all available events from the queue
+            import queue as queue_module
+            events_sent = 0
 
-            if live_status:
-                await websocket.send_json(live_status)
-                if live_status.get("status") in ("completed", "failed"):
+            while True:
+                try:
+                    event = event_queue.get_nowait()
+                    await websocket.send_json(event)
+                    events_sent += 1
+
+                    # If terminal event, exit
+                    if event.get("event") in ("scan_complete", "error"):
+                        await asyncio.sleep(0.5)
+                        logger.info(
+                            "[NETRIX] Scan %s terminal event sent, closing WS.",
+                            scan_id,
+                        )
+                        return
+                except queue_module.Empty:
                     break
-            else:
-                await websocket.send_json({
-                    "scan_id": scan_id,
-                    "status": "completed",
-                    "progress": 100,
-                    "message": "Scan finished or not found.",
-                })
-                break
 
+            if events_sent > 0:
+                no_activity_count = 0
+            else:
+                no_activity_count += 1
+
+            # Check if scan is still active
+            if scan_id not in scan_manager.active_scans:
+                # Scan may have finished before WS connected
+                live = await scan_manager.get_scan_status(scan_id)
+                scan_status_val = live.get("status", "unknown")
+
+                if scan_status_val in ("completed", "failed"):
+                    await websocket.send_json({
+                        "event": "scan_complete",
+                        "progress": 100,
+                        "total_hosts": 0,
+                        "total_ports": 0,
+                        "total_vulns": 0,
+                        "critical_count": 0,
+                        "duration": "N/A",
+                        "message": f"✅ Scan {scan_status_val}.",
+                        "scan_id": scan_id,
+                    })
+                    return
+
+            # Timeout after extended inactivity
+            if no_activity_count >= max_no_activity:
+                await websocket.send_json({
+                    "event": "error",
+                    "message": "❌ Scan timed out — no activity for 5 minutes.",
+                    "scan_id": scan_id,
+                })
+                return
+
+            # Wait before next poll cycle
             await asyncio.sleep(2)
 
     except WebSocketDisconnect:
@@ -320,4 +569,17 @@ async def scan_progress_ws(
             "[NETRIX] WebSocket error for scan %s: %s",
             scan_id, str(ws_error),
         )
-        await websocket.close()
+        try:
+            await websocket.send_json({
+                "event": "error",
+                "message": f"❌ WebSocket error: {str(ws_error)[:100]}",
+                "scan_id": scan_id,
+            })
+        except Exception:
+            pass
+    finally:
+        scan_manager.unregister_event_queue(scan_id, event_queue)
+        try:
+            await websocket.close()
+        except Exception:
+            pass

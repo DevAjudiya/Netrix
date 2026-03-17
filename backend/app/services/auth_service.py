@@ -89,12 +89,21 @@ class AuthService:
         """
         user = self.db.query(User).filter(User.username == username).first()
 
-        if not user or not verify_password(password, user.password_hash):
+        if not user:
+            logger.warning("[NETRIX] Login attempt with unknown username: %s", username)
+            raise AuthenticationException(
+                message="Invalid username or password.",
+            )
+
+        # Use password_hash — the correct field name on the User model
+        if not verify_password(password, user.password_hash):
+            logger.warning("[NETRIX] Invalid password for user: %s", username)
             raise AuthenticationException(
                 message="Invalid username or password.",
             )
 
         if not user.is_active:
+            logger.warning("[NETRIX] Login attempt by inactive user: %s", username)
             raise AuthenticationException(
                 message="User account is inactive.",
             )
@@ -115,6 +124,35 @@ class AuthService:
             "refresh_token": refresh_token,
             "token_type": "bearer",
         }
+
+    def get_current_user(self, user_id: int) -> Optional[User]:
+        """
+        Retrieve a user by ID for use with the /me endpoint.
+
+        Args:
+            user_id: The primary key of the user.
+
+        Returns:
+            User or None: The User ORM object if found; None otherwise.
+
+        Raises:
+            AuthenticationException: If user is not found or inactive.
+        """
+        user = self.db.query(User).filter(User.id == user_id).first()
+
+        if not user:
+            raise AuthenticationException(
+                message="User account not found.",
+                details=f"No user exists with ID {user_id}.",
+            )
+
+        if not user.is_active:
+            raise AuthenticationException(
+                message="User account is inactive.",
+                details="Your account has been deactivated. Contact an administrator.",
+            )
+
+        return user
 
     def refresh_access_token(self, refresh_token_str: str) -> dict:
         """

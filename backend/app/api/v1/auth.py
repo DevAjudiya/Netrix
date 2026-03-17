@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
@@ -47,6 +48,7 @@ async def login(
 
     # Update last_login timestamp
     from app.models.user import User
+
     user = db.query(User).filter(User.username == credentials.username).first()
     if user:
         user.last_login = datetime.now(timezone.utc)
@@ -91,7 +93,7 @@ async def register(
         password=user_data.password,
     )
     logger.info("[NETRIX] New user registered: %s", user_data.username)
-    return new_user
+    return UserResponse.model_validate(new_user)
 
 
 @router.post(
@@ -143,7 +145,28 @@ async def get_me(
     Returns:
         UserResponse: The authenticated user's profile data.
     """
-    return current_user
+    try:
+        # Explicitly build the response to avoid ORM serialization edge cases
+        return UserResponse(
+            id=current_user.id,
+            username=current_user.username,
+            email=current_user.email,
+            role=current_user.role,
+            is_active=current_user.is_active,
+            created_at=current_user.created_at,
+            updated_at=current_user.updated_at if current_user.updated_at else None,
+            last_login=current_user.last_login if current_user.last_login else None,
+        )
+    except Exception as exc:
+        logger.error("[NETRIX] Error serializing user profile: %s", str(exc))
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error_code": "PROFILE_SERIALIZATION_ERROR",
+                "message": "Failed to retrieve user profile.",
+                "details": str(exc),
+            },
+        )
 
 
 @router.post(

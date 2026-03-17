@@ -42,44 +42,30 @@ CRITICAL_PORTS: List[int] = [
     5432, 5900, 6379, 8080, 8443, 27017,
 ]
 
-SCAN_PROFILES: Dict[str, Dict[str, str]] = {
-    ScanType.QUICK: {
-        "args": "-sV -T4 -F --open",
-        "description": "Quick scan — service version detection on top 100 ports",
-        "estimated_time": "1-3 minutes",
-        "ports": "Top 100 ports",
+SCAN_PROFILES = {
+    "quick": {
+        "args": "-sT -sV -Pn -T4 -F --open",
+        "time": "1-3 min"
     },
-    ScanType.STEALTH: {
-        "args": "-sS -sV -T2 -p- --open",
-        "description": "Stealth SYN scan — low profile, all ports",
-        "estimated_time": "15-30 minutes",
-        "ports": "All 65535 ports",
+    "stealth": {
+        "args": "-sT -sV -Pn -T3 --open -p 1-1000",
+        "time": "5-10 min"
     },
-    ScanType.FULL: {
-        "args": "-sS -sV -sC -O -A -T4 -p- --open",
-        "description": "Full scan — service detection, OS fingerprint, scripts, all ports",
-        "estimated_time": "20-45 minutes",
-        "ports": "All 65535 ports",
+    "full": {
+        "args": "-sT -sV -Pn -T4 --open -p 1-65535",
+        "time": "15-30 min"
     },
-    ScanType.AGGRESSIVE: {
-        "args": "-A -T4 -p- --open --traceroute",
-        "description": "Aggressive scan — full detection with traceroute",
-        "estimated_time": "30-60 minutes",
-        "ports": "All 65535 ports",
+    "aggressive": {
+        "args": "-sT -sV -sC -Pn -T4 --open -p 1-10000",
+        "time": "10-20 min"
     },
-    ScanType.VULNERABILITY: {
-        "args": (
-            "-sV -T4 --script=vuln,exploit,auth,default,banner,"
-            "http-headers,http-title,http-methods,ftp-anon,"
-            "ssh-hostkey,ssh-auth-methods,smtp-commands,"
-            "dns-recursion,smb-vuln-ms17-010,smb-vuln-ms08-067,"
-            "http-shellshock,ssl-heartbleed,ssl-poodle,"
-            "rdp-vuln-ms12-020,ftp-vsftpd-backdoor -p-"
-        ),
-        "description": "Vulnerability scan — full NSE scripts for known CVEs",
-        "estimated_time": "45-90 minutes",
-        "ports": "All 65535 ports",
-    },
+    "vulnerability": {
+        "args": "-sT -sV -Pn -T4 --open -p 1-1000 "
+                "--script=vuln,banner,http-headers,"
+                "http-title,ftp-anon,ssh-hostkey,"
+                "ssl-heartbleed,smb-vuln-ms17-010",
+        "time": "20-40 min"
+    }
 }
 
 
@@ -257,6 +243,7 @@ class NmapEngine:
         custom_ports: str = "",
         scan_id: Optional[str] = None,
         callback: Optional[Callable] = None,
+        event_callback: Optional[Callable] = None,
     ) -> ScanSummary:
         """
         Execute a complete Nmap scan against the specified target.
@@ -315,15 +302,33 @@ class NmapEngine:
         )
 
         try:
-            self.nm.scan(hosts=target, arguments=args)
-        except nmap.PortScannerError as scan_error:
-            self._update_progress(scan_id, 100, "failed", str(scan_error), callback)
-            logger.error("[NETRIX] Nmap scan failed: %s", str(scan_error))
-            raise RuntimeError(f"Nmap scan failed: {scan_error}") from scan_error
-        except Exception as unexpected_error:
-            self._update_progress(scan_id, 100, "failed", str(unexpected_error), callback)
-            logger.error("[NETRIX] Unexpected scan error: %s", str(unexpected_error))
-            raise RuntimeError(f"Scan error: {unexpected_error}") from unexpected_error
+            # Check if nmap installed
+            if not self.nm:
+                raise Exception("Nmap not installed!")
+
+            # Set timeout based on scan type
+            timeouts = {
+                "quick": 300,       # 5 min
+                "stealth": 600,     # 10 min
+                "full": 1800,       # 30 min
+                "aggressive": 1200, # 20 min
+                "vulnerability": 2400 # 40 min
+            }
+            timeout_arg = f" --host-timeout {timeouts.get(scan_type.value, 1800)}s"
+
+            self.nm.scan(hosts=target, arguments=args + timeout_arg)
+        except nmap.PortScannerError as e:
+            error = str(e)
+            if "root" in error.lower() or \
+               "admin" in error.lower():
+                raise Exception(
+                    "Need Admin rights! "
+                    "Run as Administrator."
+                )
+            raise Exception(f"Nmap error: {e}")
+            
+        except Exception as e:
+            raise Exception(f"Scan failed: {e}")
 
         self._update_progress(
             scan_id, 70, "running",
@@ -332,7 +337,7 @@ class NmapEngine:
         )
 
         # ── Parse results ────────────────────────────────────────
-        hosts = self._parse_results(scan_id)
+        hosts = self._parse_results(scan_id, event_callback=event_callback)
 
         self._update_progress(
             scan_id, 90, "running",
@@ -363,7 +368,7 @@ class NmapEngine:
         profile_desc = ""
         if scan_type != ScanType.CUSTOM:
             prof = SCAN_PROFILES.get(scan_type)
-            profile_desc = prof["description"] if prof else ""
+            profile_desc = prof.get("time", "") if prof else ""
 
         summary = ScanSummary(
             scan_id=scan_id,
@@ -404,10 +409,17 @@ class NmapEngine:
     # ─────────────────────────────────────
     # Result parsing
     # ─────────────────────────────────────
-    def _parse_results(self, scan_id: str) -> List[HostScanResult]:
+    def _parse_results(
+        self,
+        scan_id: str,
+        event_callback: Optional[Callable] = None,
+    ) -> List[HostScanResult]:
         """
         Iterate over every host in the nmap results and produce
         a list of fully-parsed ``HostScanResult`` objects.
+
+        Fires ``host_found``, ``port_found``, and ``cve_found``
+        events via ``event_callback`` as each item is parsed.
         """
         hosts: List[HostScanResult] = []
 
@@ -421,6 +433,48 @@ class NmapEngine:
             try:
                 host_result = self._parse_host(host_ip)
                 hosts.append(host_result)
+
+                # Fire host_found event
+                if event_callback:
+                    event_callback({
+                        "event": "host_found",
+                        "ip": host_result.ip,
+                        "hostname": host_result.hostname or "",
+                        "status": host_result.status,
+                        "os_name": host_result.os_info.name or "",
+                        "risk_score": host_result.risk_score,
+                        "risk_level": host_result.risk_level,
+                        "message": f"✅ Host discovered: {host_result.ip}"
+                                   + (f" ({host_result.hostname})" if host_result.hostname else ""),
+                    })
+
+                    # Fire port_found events for each open port
+                    for svc in host_result.services:
+                        if svc.state == "open":
+                            product_str = f" ({svc.product}" + (f" {svc.version}" if svc.version else "") + ")" if svc.product else ""
+                            event_callback({
+                                "event": "port_found",
+                                "ip": host_result.ip,
+                                "port": svc.port,
+                                "protocol": svc.protocol,
+                                "service": svc.service_name,
+                                "product": svc.product,
+                                "version": svc.version,
+                                "message": f"🔓 Open port: {svc.port}/{svc.protocol} {svc.service_name}{product_str}",
+                            })
+
+                    # Fire cve_found events for each vulnerability
+                    for vuln_name in host_result.vulnerabilities_found:
+                        severity = self._severity_from_script(vuln_name)
+                        event_callback({
+                            "event": "cve_found",
+                            "ip": host_result.ip,
+                            "cve_id": vuln_name,
+                            "severity": severity,
+                            "cvss": 7.5 if severity == "critical" else 5.0,
+                            "message": f"⚠️ Vulnerability: {vuln_name} [{severity.upper()}] on {host_result.ip}",
+                        })
+
             except Exception as host_err:
                 logger.warning(
                     "[NETRIX] Error parsing host %s: %s",

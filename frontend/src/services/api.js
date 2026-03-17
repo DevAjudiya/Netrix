@@ -32,18 +32,33 @@ export const authAPI = {
 }
 
 export const scansAPI = {
-  create: (target, scanType, customArgs, customPorts) =>
+  // Get scan by scan_id string
+  // (NETRIX_ABC123 format)
+  get: (scanId) => 
+    api.get(`/scans/${scanId}`),
+  
+  // Get full results
+  results: (scanId) => 
+    api.get(`/scans/${scanId}/results`),
+  
+  // Get scan status
+  status: (scanId) => 
+    api.get(`/scans/${scanId}/status`),
+  
+  list: (params) => 
+    api.get('/scans/', { params }),
+    
+  create: (target, scanType, 
+           customArgs, customPorts) =>
     api.post('/scans/', {
       target,
       scan_type: scanType,
       custom_args: customArgs,
       custom_ports: customPorts
     }),
-  list: (params) => api.get('/scans/', { params }),
-  get: (scanId) => api.get(`/scans/${scanId}`),
-  status: (scanId) => api.get(`/scans/${scanId}/status`),
-  results: (scanId) => api.get(`/scans/${scanId}/results`),
-  delete: (scanId) => api.delete(`/scans/${scanId}`)
+    
+  delete: (scanId) => 
+    api.delete(`/scans/${scanId}`)
 }
 
 export const reportsAPI = {

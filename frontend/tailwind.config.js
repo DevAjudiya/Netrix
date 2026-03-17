@@ -8,13 +8,13 @@ export default {
         extend: {
             colors: {
                 netrix: {
-                    bg: '#0F172A',
-                    card: '#1E293B',
-                    border: '#334155',
-                    text: '#E2E8F0',
-                    muted: '#94A3B8',
-                    accent: '#06B6D4',
-                    'accent-hover': '#0891B2',
+                    bg: 'rgb(var(--netrix-bg) / <alpha-value>)',
+                    card: 'rgb(var(--netrix-card) / <alpha-value>)',
+                    border: 'rgb(var(--netrix-border) / <alpha-value>)',
+                    text: 'rgb(var(--netrix-text) / <alpha-value>)',
+                    muted: 'rgb(var(--netrix-muted) / <alpha-value>)',
+                    accent: 'rgb(var(--netrix-accent) / <alpha-value>)',
+                    'accent-hover': 'rgb(var(--netrix-accent-hover) / <alpha-value>)',
                 },
                 severity: {
                     critical: '#DC2626',

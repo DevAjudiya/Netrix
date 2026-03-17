@@ -154,6 +154,37 @@ def verify_token(token: str) -> Dict[str, Any]:
     return payload
 
 
+def verify_token_websocket(token: str) -> Optional[Dict[str, Any]]:
+    """
+    Verify a JWT token for WebSocket connections.
+
+    Unlike ``verify_token()``, this function does NOT raise an
+    exception on failure — it returns ``None`` instead.  This is
+    designed for WebSocket handlers where ``Depends()`` cannot be
+    used and the handler must close the connection manually.
+
+    Args:
+        token: The JWT token string to verify.
+
+    Returns:
+        dict: The decoded payload if valid, or None on failure.
+    """
+    settings = get_settings()
+
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM],
+        )
+        # Ensure the token contains required claims
+        if "user_id" not in payload:
+            return None
+        return payload
+    except JWTError:
+        return None
+
+
 def get_password_hash(password: str) -> str:
     """
     Hash a plain-text password using bcrypt with 12 rounds.

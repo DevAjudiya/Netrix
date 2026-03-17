@@ -3,7 +3,8 @@ import { useDispatch } from 'react-redux'
 import { useNavigate } from 'react-router-dom'
 import { loginSuccess, setAuthError } from '../store'
 import { authAPI } from '../services/api'
-import { Shield, Eye, EyeOff, Loader2, Lock, User } from 'lucide-react'
+import { Shield, Eye, EyeOff, Loader2, Lock, User, Info } from 'lucide-react'
+import ThemeToggle from '../components/ThemeToggle'
 
 export default function Login() {
     const dispatch = useDispatch()
@@ -38,7 +39,10 @@ export default function Login() {
         } catch (err) {
             // Clean up token if /me request failed after login
             localStorage.removeItem('netrix_token')
-            const msg = err.response?.data?.message || err.response?.data?.detail || 'Invalid credentials. Please try again.'
+            const msg =
+                err.response?.data?.message ||
+                err.response?.data?.detail ||
+                'Invalid credentials. Please try again.'
             setError(msg)
             dispatch(setAuthError(msg))
         } finally {
@@ -46,22 +50,34 @@ export default function Login() {
         }
     }
 
+    const fillDefaults = () => {
+        setUsername('netrix_admin')
+        setPassword('Admin@Netrix123')
+        setError('')
+    }
+
     return (
         <div className="min-h-screen bg-netrix-bg flex items-center justify-center p-4 relative overflow-hidden">
             {/* Background Grid */}
-            <div className="absolute inset-0 opacity-[0.03]"
+            <div
+                className="absolute inset-0 opacity-[0.03]"
                 style={{
                     backgroundImage: `
-            linear-gradient(rgba(6,182,212,0.3) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(6,182,212,0.3) 1px, transparent 1px)
-          `,
-                    backgroundSize: '60px 60px'
+                        linear-gradient(rgba(6,182,212,0.3) 1px, transparent 1px),
+                        linear-gradient(90deg, rgba(6,182,212,0.3) 1px, transparent 1px)
+                    `,
+                    backgroundSize: '60px 60px',
                 }}
             />
 
             {/* Glow Orbs */}
             <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-cyan-500/5 rounded-full blur-[120px]" />
             <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-blue-500/5 rounded-full blur-[120px]" />
+
+            {/* Theme Toggle */}
+            <div className="absolute top-4 right-4 z-20">
+                <ThemeToggle />
+            </div>
 
             <div className="w-full max-w-md relative z-10 animate-fade-in">
                 {/* Logo */}
@@ -87,18 +103,31 @@ export default function Login() {
                         </div>
                     )}
 
-                    <form onSubmit={handleSubmit} className="space-y-4">
+                    <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off" role="presentation">
+                        {/* Hidden dummy fields to prevent browser credential detection */}
+                        <input type="text" name="prevent_autofill" id="prevent_autofill" autoComplete="off" style={{ display: 'none' }} tabIndex={-1} />
+                        <input type="password" name="prevent_autofill_pass" id="prevent_autofill_pass" autoComplete="off" style={{ display: 'none' }} tabIndex={-1} />
+
                         <div>
                             <label className="block text-sm font-medium text-netrix-muted mb-1.5">Username</label>
-                            <div className="relative">
-                                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-netrix-muted/50" />
+                            <div className="flex items-center bg-netrix-bg border border-netrix-border rounded-lg focus-within:border-netrix-accent focus-within:ring-1 focus-within:ring-netrix-accent/30 transition-all duration-200">
+                                <span className="flex items-center justify-center w-10 shrink-0 text-netrix-muted/50">
+                                    <User className="w-4 h-4" />
+                                </span>
                                 <input
-                                    type="text"
+                                    id="netrix-usr-field"
+                                    name="netrix-usr-field"
+                                    type="search"
+                                    role="textbox"
                                     value={username}
                                     onChange={(e) => setUsername(e.target.value)}
                                     placeholder="Enter your username"
-                                    className="input-dark pl-10"
+                                    className="w-full bg-transparent py-3 pr-4 text-netrix-text placeholder-netrix-muted/50 focus:outline-none"
                                     autoFocus
+                                    autoComplete="off"
+                                    data-lpignore="true"
+                                    data-form-type="other"
+                                    data-1p-ignore
                                     disabled={loading}
                                 />
                             </div>
@@ -106,14 +135,22 @@ export default function Login() {
 
                         <div>
                             <label className="block text-sm font-medium text-netrix-muted mb-1.5">Password</label>
-                            <div className="relative">
-                                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-netrix-muted/50" />
+                            <div className="flex items-center bg-netrix-bg border border-netrix-border rounded-lg focus-within:border-netrix-accent focus-within:ring-1 focus-within:ring-netrix-accent/30 transition-all duration-200 relative">
+                                <span className="flex items-center justify-center w-10 shrink-0 text-netrix-muted/50">
+                                    <Lock className="w-4 h-4" />
+                                </span>
                                 <input
+                                    id="netrix-key-field"
+                                    name="netrix-key-field"
                                     type={showPassword ? 'text' : 'password'}
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
                                     placeholder="Enter your password"
-                                    className="input-dark pl-10 pr-10"
+                                    className="w-full bg-transparent py-3 pr-10 text-netrix-text placeholder-netrix-muted/50 focus:outline-none"
+                                    autoComplete="off"
+                                    data-lpignore="true"
+                                    data-form-type="other"
+                                    data-1p-ignore
                                     disabled={loading}
                                 />
                                 <button
@@ -127,6 +164,7 @@ export default function Login() {
                         </div>
 
                         <button
+                            id="login-submit"
                             type="submit"
                             disabled={loading}
                             className="w-full btn-primary flex items-center justify-center gap-2 mt-6"
@@ -144,6 +182,28 @@ export default function Login() {
                             )}
                         </button>
                     </form>
+
+                    {/* Default Credentials Hint */}
+                    <div
+                        onClick={fillDefaults}
+                        className="mt-5 p-3 rounded-lg bg-cyan-500/5 border border-cyan-500/20 cursor-pointer hover:bg-cyan-500/10 transition-colors group"
+                    >
+                        <div className="flex items-center gap-2 mb-1.5">
+                            <Info className="w-3.5 h-3.5 text-cyan-400" />
+                            <span className="text-xs font-medium text-cyan-400">Default Credentials</span>
+                            <span className="ml-auto text-[10px] text-cyan-400/50 group-hover:text-cyan-400/80 transition-colors">
+                                click to fill
+                            </span>
+                        </div>
+                        <div className="flex gap-4 text-xs text-netrix-muted">
+                            <span>
+                                User: <code className="text-cyan-300/80 bg-cyan-500/10 px-1 py-0.5 rounded">netrix_admin</code>
+                            </span>
+                            <span>
+                                Pass: <code className="text-cyan-300/80 bg-cyan-500/10 px-1 py-0.5 rounded">Admin@Netrix123</code>
+                            </span>
+                        </div>
+                    </div>
                 </div>
 
                 <p className="text-center text-netrix-muted/40 text-xs mt-6">

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { logout } from '../store'
 import { authAPI } from '../services/api'
 import { Shield, LogOut, User, Menu } from 'lucide-react'
+import ThemeToggle from './ThemeToggle'
 
 export default function Navbar({ onToggleSidebar }) {
     const dispatch = useDispatch()
@@ -43,6 +44,7 @@ export default function Navbar({ onToggleSidebar }) {
                 </div>
 
                 <div className="flex items-center gap-3">
+                    <ThemeToggle />
                     <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-netrix-bg/50 border border-netrix-border/30">
                         <div className="w-7 h-7 rounded-full gradient-accent flex items-center justify-center">
                             <User className="w-3.5 h-3.5 text-white" />

@@ -72,6 +72,10 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         Returns:
             Response: The HTTP response from the downstream handler.
         """
+        # Skip WebSocket requests — BaseHTTPMiddleware cannot handle them
+        if request.scope.get("type") == "websocket":
+            return await call_next(request)
+
         start_time = time.perf_counter()
         request_path = request.url.path
         request_method = request.method
@@ -174,6 +178,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         Returns:
             Response: Either the downstream response or an HTTP 429 error.
         """
+        # Skip WebSocket requests — BaseHTTPMiddleware cannot handle them
+        if request.scope.get("type") == "websocket":
+            return await call_next(request)
+
         request_path = request.url.path
 
         # Skip rate limiting for excluded paths
@@ -335,6 +343,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         Returns:
             Response: The Response with security headers injected.
         """
+        # Skip WebSocket requests — BaseHTTPMiddleware cannot handle them
+        if request.scope.get("type") == "websocket":
+            return await call_next(request)
+
         response = await call_next(request)
 
         # Prevent MIME-type sniffing — browser must respect Content-Type

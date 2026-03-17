@@ -7,6 +7,7 @@
 
 import asyncio
 import logging
+import queue
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -50,6 +51,8 @@ class ScanManager:
         self.active_scans: Dict[str, Dict[str, Any]] = {}
         self._progress_callbacks: Dict[str, Callable] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # Per-scan event queues for WebSocket streaming
+        self._event_queues: Dict[str, List[queue.Queue]] = {}
 
         logger.info(
             "[NETRIX] %s | Scan Manager initialised — max_workers=%d",
@@ -172,7 +175,7 @@ class ScanManager:
         }
 
         # ── Submit to thread pool ────────────────────────────────
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
         self._loop.run_in_executor(
             self.executor,
             self._run_scan_thread,
@@ -232,7 +235,7 @@ class ScanManager:
         }
 
         # ── Submit to thread pool ────────────────────────────────
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
         self._loop.run_in_executor(
             self.executor,
             self._run_scan_thread,
@@ -325,6 +328,52 @@ class ScanManager:
     # ─────────────────────────────────────
     # Threaded scan execution
     # ─────────────────────────────────────
+    # ─────────────────────────────────────
+    # Event queue management (for WebSocket streaming)
+    # ─────────────────────────────────────
+    def register_event_queue(self, scan_id: str) -> queue.Queue:
+        """
+        Register a new event consumer queue for a scan.
+
+        Multiple WebSocket clients can subscribe to the same scan.
+        Returns a thread-safe Queue that will receive events.
+        """
+        q: queue.Queue = queue.Queue(maxsize=500)
+        self._event_queues.setdefault(scan_id, []).append(q)
+        logger.debug("[NETRIX] Event queue registered for scan %s", scan_id)
+        return q
+
+    def unregister_event_queue(self, scan_id: str, q: queue.Queue) -> None:
+        """Remove an event consumer queue."""
+        queues = self._event_queues.get(scan_id, [])
+        if q in queues:
+            queues.remove(q)
+        if not queues:
+            self._event_queues.pop(scan_id, None)
+        logger.debug("[NETRIX] Event queue unregistered for scan %s", scan_id)
+
+    def push_event(self, scan_id: str, event: Dict[str, Any]) -> None:
+        """
+        Push an event to all registered queues for a scan.
+
+        Thread-safe — called from the scan worker thread.
+        """
+        event.setdefault("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+        event.setdefault("scan_id", scan_id)
+        for q in self._event_queues.get(scan_id, []):
+            try:
+                q.put_nowait(event)
+            except queue.Full:
+                # Drop oldest event to make room
+                try:
+                    q.get_nowait()
+                    q.put_nowait(event)
+                except Exception:
+                    pass
+
+    # ─────────────────────────────────────
+    # Threaded scan execution
+    # ─────────────────────────────────────
     def _run_scan_thread(
         self,
         target: str,
@@ -341,22 +390,44 @@ class ScanManager:
             1. Runs ``NmapEngine.run_scan()``.
             2. Opens a fresh database session to persist results.
             3. Updates the active-scan tracker throughout.
-            4. Cleans up the active entry on completion or failure.
+            4. Pushes granular events for WebSocket consumers.
+            5. Cleans up the active entry on completion or failure.
         """
         from app.database.session import SessionLocal
 
         db = SessionLocal()
 
         try:
-            # Update status → running
+            # Update status → running (in-memory tracker)
             if scan_id in self.active_scans:
                 self.active_scans[scan_id]["status"] = "running"
                 self.active_scans[scan_id]["progress"] = 5
+
+            # Update status → running (database)
+            from app.models.scan import Scan as ScanModel
+            try:
+                scan_record = db.query(ScanModel).filter(ScanModel.scan_id == scan_id).first()
+                if scan_record:
+                    scan_record.status = "running"
+                    scan_record.started_at = datetime.now(timezone.utc)
+                    scan_record.progress = 5
+                    db.commit()
+            except Exception as db_status_err:
+                logger.warning("[NETRIX] Could not update DB status to running: %s", str(db_status_err))
+                db.rollback()
 
             logger.info(
                 "[NETRIX] %s | Thread started for scan %s",
                 datetime.now(timezone.utc).isoformat(), scan_id,
             )
+
+            # Push scan_started event
+            self.push_event(scan_id, {
+                "event": "scan_started",
+                "target": target,
+                "scan_type": scan_type.value,
+                "message": f"🔍 Initiating {scan_type.value} scan on {target}...",
+            })
 
             # ── Progress callback ────────────────────────────────
             def progress_callback(
@@ -369,6 +440,20 @@ class ScanManager:
                     self.active_scans[sid]["progress"] = progress
                     self.active_scans[sid]["status"] = status
                     self.active_scans[sid]["message"] = message
+                # Push progress event
+                self.push_event(sid, {
+                    "event": "progress",
+                    "progress": progress,
+                    "current_host": "",
+                    "hosts_found": 0,
+                    "ports_found": 0,
+                    "vulns_found": 0,
+                    "message": message or f"Scanning... {progress}%",
+                })
+
+            # ── Event callback for granular events ───────────────
+            def event_callback(event: Dict[str, Any]) -> None:
+                self.push_event(scan_id, event)
 
             # ── Run the scan ─────────────────────────────────────
             summary = self.engine.run_scan(
@@ -378,6 +463,7 @@ class ScanManager:
                 custom_ports=custom_ports,
                 scan_id=scan_id,
                 callback=progress_callback,
+                event_callback=event_callback,
             )
 
             # ── Persist to DB ────────────────────────────────────
@@ -386,6 +472,23 @@ class ScanManager:
                 db_session=db,
                 user_id=user_id,
             )
+
+            # Push scan_complete event
+            duration_secs = summary.duration_seconds
+            minutes = int(duration_secs // 60)
+            seconds = int(duration_secs % 60)
+            duration_str = f"{minutes} min {seconds} sec" if minutes else f"{seconds} sec"
+
+            self.push_event(scan_id, {
+                "event": "scan_complete",
+                "progress": 100,
+                "total_hosts": summary.hosts_up,
+                "total_ports": summary.total_open_ports,
+                "total_vulns": summary.total_vulnerabilities,
+                "critical_count": summary.critical_hosts,
+                "duration": duration_str,
+                "message": "✅ Scan completed successfully!",
+            })
 
             logger.info(
                 "[NETRIX] %s | Scan %s completed and saved",
@@ -411,6 +514,12 @@ class ScanManager:
                 self.active_scans[scan_id]["status"] = "failed"
                 self.active_scans[scan_id]["progress"] = 100
                 self.active_scans[scan_id]["message"] = str(thread_err)
+
+            # Push error event
+            self.push_event(scan_id, {
+                "event": "error",
+                "message": f"❌ Scan failed: {str(thread_err)[:200]}",
+            })
 
             logger.error(
                 "[NETRIX] Scan %s failed: %s",

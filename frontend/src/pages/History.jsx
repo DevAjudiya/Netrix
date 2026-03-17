@@ -147,14 +147,17 @@ export default function History() {
 
                 {/* Filters */}
                 <div className="flex flex-col sm:flex-row gap-3 mb-6">
-                    <div className="relative flex-1">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-netrix-muted/50" />
+                    <div className="flex items-center bg-netrix-bg border border-netrix-border rounded-lg focus-within:border-netrix-accent focus-within:ring-1 focus-within:ring-netrix-accent/30 transition-all duration-200 flex-1">
+                        <span className="flex items-center justify-center w-10 shrink-0 text-netrix-muted/50">
+                            <Search className="w-4 h-4" />
+                        </span>
                         <input
                             type="text"
                             placeholder="Search by target, scan ID..."
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}
-                            className="input-dark pl-10"
+                            className="w-full bg-transparent py-3 pr-4 text-netrix-text placeholder-netrix-muted/50 focus:outline-none"
+                            autoComplete="off"
                         />
                     </div>
 

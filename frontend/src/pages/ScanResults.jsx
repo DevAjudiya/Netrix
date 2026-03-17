@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Fragment } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { scansAPI, hostsAPI, vulnsAPI, reportsAPI } from '../services/api'
 import {
@@ -31,23 +31,32 @@ export default function ScanResults() {
     const [generating, setGenerating] = useState(false)
 
     useEffect(() => {
-        const fetchData = async () => {
-            setLoading(true)
-            try {
-                const [scanRes, resultsRes] = await Promise.all([
-                    scansAPI.get(id),
-                    scansAPI.results(id)
-                ])
-                setScan(scanRes.data)
-                setResults(resultsRes.data)
-            } catch (err) {
-                setError(err.response?.data?.detail || 'Failed to load scan results')
-            } finally {
-                setLoading(false)
-            }
-        }
-        fetchData()
+        loadScanResults()
     }, [id])
+
+    const loadScanResults = async () => {
+        setLoading(true)
+        setError(null)
+        try {
+            const [scanRes, resultsRes] = await Promise.all([
+                scansAPI.get(id),
+                scansAPI.results(id)
+            ])
+            setScan(scanRes.data)
+            setResults(resultsRes.data)
+        } catch (err) {
+            console.error('Load error:', err)
+            if (err.response?.status === 404) {
+                setError('Scan not found')
+            } else if (err.response?.status === 500) {
+                setError(`Server error: ${err.response?.data?.detail || 'Unknown error'}`)
+            } else {
+                setError('Failed to load scan results')
+            }
+        } finally {
+            setLoading(false)
+        }
+    }
 
     const toggleHostPorts = async (hostId) => {
         if (expandedHost === hostId) {
@@ -124,12 +133,17 @@ export default function ScanResults() {
     if (error) {
         return (
             <Layout>
-                <div className="flex flex-col items-center justify-center h-[60vh] text-center">
-                    <AlertTriangle className="w-12 h-12 text-red-400 mb-3" />
-                    <p className="text-red-400 mb-4">{error}</p>
-                    <button onClick={() => navigate('/history')} className="btn-secondary">
-                        Back to History
-                    </button>
+                <div className="flex flex-col items-center justify-center h-[60vh] gap-4 text-center">
+                    <AlertTriangle className="w-12 h-12 text-red-400 mb-2" />
+                    <div className="text-red-400 text-lg mb-2">⚠️ {error}</div>
+                    <div className="flex gap-3">
+                        <button onClick={() => navigate('/history')} className="btn-secondary px-4 py-2">
+                            Back to History
+                        </button>
+                        <button onClick={loadScanResults} className="btn-primary flex items-center gap-2 px-4 py-2">
+                            🔄 Retry
+                        </button>
+                    </div>
                 </div>
             </Layout>
         )
@@ -222,8 +236,8 @@ export default function ScanResults() {
                                     </thead>
                                     <tbody>
                                         {sortData(hosts, sortField).map((host) => (
-                                            <>
-                                                <tr key={host.id} className="cursor-pointer" onClick={() => toggleHostPorts(host.id)}>
+                                            <Fragment key={host.id}>
+                                                <tr className="cursor-pointer" onClick={() => toggleHostPorts(host.id)}>
                                                     <td>
                                                         <div className="flex items-center gap-2">
                                                             <Server className="w-4 h-4 text-netrix-muted" />
@@ -252,22 +266,37 @@ export default function ScanResults() {
                                                     </td>
                                                 </tr>
                                                 {expandedHost === host.id && (
-                                                    <tr key={`${host.id}-ports`}>
+                                                    <tr>
                                                         <td colSpan={6} className="!p-0">
                                                             <div className="bg-netrix-bg/50 p-4">
                                                                 <h4 className="text-sm font-semibold text-netrix-muted mb-2 flex items-center gap-1">
                                                                     <Lock className="w-3.5 h-3.5" /> Open Ports
                                                                 </h4>
-                                                                {hostPorts[host.id] && hostPorts[host.id].length > 0 ? (
-                                                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                                                                        {hostPorts[host.id].map((port, i) => (
-                                                                            <div key={i} className="flex items-center gap-2 p-2 rounded-lg bg-netrix-card/50 border border-netrix-border/20">
-                                                                                <span className="font-mono text-xs text-netrix-accent">{port.port_number || port.port}/{port.protocol || 'tcp'}</span>
-                                                                                <span className="text-xs text-netrix-muted">—</span>
-                                                                                <span className="text-xs text-netrix-text">{port.service_name || port.service || 'unknown'}</span>
-                                                                            </div>
-                                                                        ))}
-                                                                    </div>
+                                                                {host.ports && host.ports.length > 0 ? (
+                                                                    <table className="w-full table-dark">
+                                                                        <thead>
+                                                                            <tr>
+                                                                                <th>Port</th>
+                                                                                <th>Protocol</th>
+                                                                                <th>Service</th>
+                                                                                <th>Product</th>
+                                                                                <th>Version</th>
+                                                                                <th>State</th>
+                                                                            </tr>
+                                                                        </thead>
+                                                                        <tbody>
+                                                                            {host.ports.map(port => (
+                                                                                <tr key={port.id || port.port_number}>
+                                                                                    <td>{port.port_number || port.port}</td>
+                                                                                    <td>{port.protocol || 'tcp'}</td>
+                                                                                    <td>{port.service_name || port.service || 'unknown'}</td>
+                                                                                    <td>{port.product || '—'}</td>
+                                                                                    <td>{port.version || '—'}</td>
+                                                                                    <td>{port.state || 'open'}</td>
+                                                                                </tr>
+                                                                            ))}
+                                                                        </tbody>
+                                                                    </table>
                                                                 ) : (
                                                                     <p className="text-xs text-netrix-muted">No port details available</p>
                                                                 )}
@@ -275,7 +304,7 @@ export default function ScanResults() {
                                                         </td>
                                                     </tr>
                                                 )}
-                                            </>
+                                            </Fragment>
                                         ))}
                                     </tbody>
                                 </table>

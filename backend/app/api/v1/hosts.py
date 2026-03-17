@@ -9,7 +9,7 @@ import logging
 import math
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ScanNotFoundException
@@ -17,8 +17,8 @@ from app.core.security import get_current_user
 from app.database.session import get_db
 from app.models.host import Host
 from app.models.port import Port
-from app.models.scan import Scan
 from app.models.vulnerability import Vulnerability
+from app.models.scan import Scan
 from app.schemas.host import HostResponse, HostWithPorts, PortResponse
 from app.schemas.vulnerability import VulnerabilityResponse
 
@@ -27,75 +27,32 @@ logger = logging.getLogger("netrix")
 router = APIRouter()
 
 
-@router.get(
-    "/",
-    status_code=status.HTTP_200_OK,
-    summary="List hosts",
-)
-async def list_hosts(
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
-    scan_id: Optional[int] = Query(None, description="Filter by scan ID"),
-    host_status: Optional[str] = Query(
-        None,
-        alias="status",
-        description="Filter by host status (up, down)",
-    ),
-    min_risk: Optional[int] = Query(
-        None, ge=0, le=100,
-        description="Minimum risk score",
-    ),
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+@router.get("/")
+async def get_hosts(
+    scan_id: Optional[int] = Query(None),
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
-    """
-    List all discovered hosts across the user's scans.
-
-    Supports filtering by scan ID, host status, and minimum risk score.
-
-    Returns:
-        dict: Paginated list of host records.
-    """
-    user_scan_ids = db.query(Scan.id).filter(Scan.user_id == current_user.id)
-    query = db.query(Host).filter(Host.scan_id.in_(user_scan_ids))
-
-    if scan_id:
-        query = query.filter(Host.scan_id == scan_id)
-    if host_status:
-        query = query.filter(Host.status == host_status.lower())
-    if min_risk is not None:
-        query = query.filter(Host.risk_score >= min_risk)
-
-    total = query.count()
-    hosts = (
-        query.order_by(Host.risk_score.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-
-    return {
-        "hosts": [
-            {
-                "id": h.id,
-                "scan_id": h.scan_id,
-                "ip_address": h.ip_address,
-                "hostname": h.hostname,
-                "status": h.status,
-                "os_name": h.os_name,
-                "os_family": h.os_family,
-                "risk_score": h.risk_score,
-                "risk_level": h.risk_level,
-                "risk_level_color": h.risk_level_color,
-                "created_at": h.created_at.isoformat() if h.created_at else None,
-            }
-            for h in hosts
-        ],
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": math.ceil(total / page_size) if total > 0 else 0,
-    }
+    try:
+        query = db.query(Host)
+        if scan_id:
+            query = query.filter(
+                Host.scan_id == scan_id
+            )
+        hosts = query.all()
+        
+        result = []
+        for host in hosts:
+            ports = db.query(Port).filter(
+                Port.host_id == host.id
+            ).all()
+            h = host.to_dict()
+            h['ports'] = [p.to_dict() for p in ports]
+            result.append(h)
+        
+        return result
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 @router.get(

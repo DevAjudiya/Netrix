@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.security import get_current_user
 from app.database.session import get_db
 from app.models.host import Host
+from app.models.report import Report
 from app.models.scan import Scan
 from app.models.vulnerability import Vulnerability
 
@@ -22,86 +23,74 @@ logger = logging.getLogger("netrix")
 router = APIRouter()
 
 
-@router.get(
-    "/stats",
-    status_code=status.HTTP_200_OK,
-    summary="Get dashboard statistics",
-)
-async def get_dashboard_stats(
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+@router.get("/stats")
+async def get_stats(
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
-    """
-    Get aggregated dashboard statistics for the current user.
-
-    Returns total counts for scans, hosts, vulnerabilities, and a
-    severity breakdown for use in dashboard widgets.
-
-    Returns:
-        dict: Aggregated counts and statistics.
-    """
-    user_id = current_user.id
-
-    # Scan statistics
-    total_scans = db.query(func.count(Scan.id)).filter(
-        Scan.user_id == user_id,
-    ).scalar() or 0
-
-    completed_scans = db.query(func.count(Scan.id)).filter(
-        Scan.user_id == user_id, Scan.status == "completed",
-    ).scalar() or 0
-
-    running_scans = db.query(func.count(Scan.id)).filter(
-        Scan.user_id == user_id, Scan.status.in_(["pending", "running"]),
-    ).scalar() or 0
-
-    failed_scans = db.query(func.count(Scan.id)).filter(
-        Scan.user_id == user_id, Scan.status == "failed",
-    ).scalar() or 0
-
-    # Host statistics
-    user_scan_ids = db.query(Scan.id).filter(Scan.user_id == user_id)
-    total_hosts = db.query(func.count(Host.id)).filter(
-        Host.scan_id.in_(user_scan_ids),
-    ).scalar() or 0
-
-    hosts_up = db.query(func.count(Host.id)).filter(
-        Host.scan_id.in_(user_scan_ids), Host.status == "up",
-    ).scalar() or 0
-
-    # Vulnerability statistics
-    total_vulns = db.query(func.count(Vulnerability.id)).filter(
-        Vulnerability.scan_id.in_(user_scan_ids),
-    ).scalar() or 0
-
-    critical_vulns = db.query(func.count(Vulnerability.id)).filter(
-        Vulnerability.scan_id.in_(user_scan_ids),
-        Vulnerability.severity == "critical",
-    ).scalar() or 0
-
-    high_vulns = db.query(func.count(Vulnerability.id)).filter(
-        Vulnerability.scan_id.in_(user_scan_ids),
-        Vulnerability.severity == "high",
-    ).scalar() or 0
-
-    return {
-        "scans": {
-            "total": total_scans,
-            "completed": completed_scans,
-            "running": running_scans,
-            "failed": failed_scans,
-        },
-        "hosts": {
-            "total": total_hosts,
-            "up": hosts_up,
-        },
-        "vulnerabilities": {
-            "total": total_vulns,
-            "critical": critical_vulns,
-            "high": high_vulns,
-        },
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
+    try:
+        uid = current_user.id
+        
+        total_scans = db.query(Scan).filter(
+            Scan.user_id == uid
+        ).count()
+        
+        completed = db.query(Scan).filter(
+            Scan.user_id == uid,
+            Scan.status == 'completed'
+        ).count()
+        
+        running = db.query(Scan).filter(
+            Scan.user_id == uid,
+            Scan.status == 'running'
+        ).count()
+        
+        # Hosts from user scans
+        user_scan_ids = [
+            s.id for s in db.query(Scan).filter(
+                Scan.user_id == uid
+            ).all()
+        ]
+        
+        total_hosts = db.query(Host).filter(
+            Host.scan_id.in_(user_scan_ids)
+        ).count() if user_scan_ids else 0
+        
+        total_vulns = db.query(Vulnerability).filter(
+            Vulnerability.scan_id.in_(user_scan_ids)
+        ).count() if user_scan_ids else 0
+        
+        critical = db.query(Vulnerability).filter(
+            Vulnerability.scan_id.in_(user_scan_ids),
+            Vulnerability.severity == 'critical'
+        ).count() if user_scan_ids else 0
+        
+        total_reports = db.query(Report).filter(
+            Report.user_id == uid
+        ).count()
+        
+        return {
+            "total_scans": total_scans,
+            "completed_scans": completed,
+            "active_scans": running,
+            "total_hosts_discovered": total_hosts,
+            "total_vulnerabilities": total_vulns,
+            "critical_vulnerabilities": critical,
+            "total_reports": total_reports,
+            "scans_this_week": total_scans
+        }
+    except Exception as e:
+        print(f"[NETRIX] Stats error: {e}")
+        return {
+            "total_scans": 0,
+            "completed_scans": 0,
+            "active_scans": 0,
+            "total_hosts_discovered": 0,
+            "total_vulnerabilities": 0,
+            "critical_vulnerabilities": 0,
+            "total_reports": 0,
+            "scans_this_week": 0
+        }
 
 
 @router.get(

@@ -19,7 +19,7 @@ export default function Vulnerabilities() {
     const [selectedVuln, setSelectedVuln] = useState(null)
 
     useEffect(() => {
-        const fetchVulns = async () => {
+        const loadVulns = async () => {
             setLoading(true)
             try {
                 const params = {}
@@ -28,12 +28,17 @@ export default function Vulnerabilities() {
                 const res = await vulnsAPI.list(params)
                 setVulns(Array.isArray(res.data) ? res.data : res.data?.items || res.data?.vulnerabilities || [])
             } catch (err) {
-                setError(err.response?.data?.detail || 'Failed to load vulnerabilities')
+                // Only show error for real errors
+                // not for empty results
+                if (err.response?.status !== 404) {
+                    setError('Failed to load vulnerabilities')
+                }
+                setVulns([])
             } finally {
                 setLoading(false)
             }
         }
-        fetchVulns()
+        loadVulns()
     }, [severityFilter, search])
 
     const handleSort = (field) => {
@@ -93,14 +98,17 @@ export default function Vulnerabilities() {
 
                 {/* Filters */}
                 <div className="flex flex-col sm:flex-row gap-3 mb-6">
-                    <div className="relative flex-1">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-netrix-muted/50" />
+                    <div className="flex items-center bg-netrix-bg border border-netrix-border rounded-lg focus-within:border-netrix-accent focus-within:ring-1 focus-within:ring-netrix-accent/30 transition-all duration-200 flex-1">
+                        <span className="flex items-center justify-center w-10 shrink-0 text-netrix-muted/50">
+                            <Search className="w-4 h-4" />
+                        </span>
                         <input
                             type="text"
                             placeholder="Search by CVE ID, description, or service..."
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}
-                            className="input-dark pl-10"
+                            className="w-full bg-transparent py-3 pr-4 text-netrix-text placeholder-netrix-muted/50 focus:outline-none"
+                            autoComplete="off"
                         />
                     </div>
                     <div className="flex gap-2 flex-wrap">
@@ -167,9 +175,9 @@ export default function Vulnerabilities() {
                                             <td><VulnBadge severity={vuln.severity} /></td>
                                             <td>
                                                 <span className={`font-mono font-bold text-sm ${(vuln.cvss_score || 0) >= 9 ? 'text-severity-critical' :
-                                                        (vuln.cvss_score || 0) >= 7 ? 'text-severity-high' :
-                                                            (vuln.cvss_score || 0) >= 4 ? 'text-severity-medium' :
-                                                                'text-severity-low'
+                                                    (vuln.cvss_score || 0) >= 7 ? 'text-severity-high' :
+                                                        (vuln.cvss_score || 0) >= 4 ? 'text-severity-medium' :
+                                                            'text-severity-low'
                                                     }`}>
                                                     {vuln.cvss_score ?? '—'}
                                                 </span>
@@ -226,8 +234,8 @@ export default function Vulnerabilities() {
                                 <div>
                                     <label className="text-xs text-netrix-muted uppercase tracking-wider">CVSS Score</label>
                                     <p className={`text-2xl font-bold font-mono ${(selectedVuln.cvss_score || 0) >= 9 ? 'text-severity-critical' :
-                                            (selectedVuln.cvss_score || 0) >= 7 ? 'text-severity-high' :
-                                                'text-severity-medium'
+                                        (selectedVuln.cvss_score || 0) >= 7 ? 'text-severity-high' :
+                                            'text-severity-medium'
                                         }`}>
                                         {selectedVuln.cvss_score ?? 'N/A'}
                                     </p>

@@ -92,6 +92,20 @@ def get_scan_manager():
     return _scan_manager_instance
 
 
+def get_scan_manager_instance():
+    """
+    Direct accessor for the ScanManager singleton.
+
+    Unlike ``get_scan_manager``, this is NOT a FastAPI dependency —
+    it can be called directly from WebSocket handlers or background
+    tasks where ``Depends()`` is not available.
+
+    Returns:
+        ScanManager: The shared scan manager instance.
+    """
+    return get_scan_manager()
+
+
 def get_cve_engine():
     """
     FastAPI dependency that provides a singleton CVEEngine instance.
