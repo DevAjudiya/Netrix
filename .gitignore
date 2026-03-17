@@ -90,6 +90,7 @@ scans_output/
 reports/
 *.pdf
 *.html
+!frontend/index.html
 !frontend/public/*.html
 !frontend/src/**/*.html
 

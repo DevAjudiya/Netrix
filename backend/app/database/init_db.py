@@ -115,6 +115,11 @@ def create_default_admin() -> bool:
 
     except Exception as seed_error:
         db.rollback()
+        # IntegrityError means another worker already created the admin
+        from sqlalchemy.exc import IntegrityError
+        if isinstance(seed_error, IntegrityError):
+            logger.info("[NETRIX] Default admin already created by another worker")
+            return False
         logger.error(
             "[NETRIX] Failed to create default admin: %s",
             str(seed_error),
