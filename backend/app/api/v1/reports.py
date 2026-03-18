@@ -69,6 +69,7 @@ async def generate_report(
         raise ReportGenerationException(
             message="Can only generate reports for completed scans.",
             details=f"Scan {scan.scan_id} is currently '{scan.status}'.",
+            status_code=422,
         )
 
     report_service = ReportService(db)
@@ -160,6 +161,7 @@ async def get_report(
         raise ReportGenerationException(
             message="Report not found.",
             details=f"Report ID {report_id} does not exist.",
+            status_code=404,
         )
 
     return report
@@ -196,6 +198,7 @@ async def download_report(
         raise ReportGenerationException(
             message="Report not found.",
             details=f"Report ID {report_id} does not exist.",
+            status_code=404,
         )
 
     if not report.file_path or not os.path.exists(report.file_path):
@@ -258,6 +261,7 @@ async def delete_report(
         raise ReportGenerationException(
             message="Report not found.",
             details=f"Report ID {report_id} does not exist.",
+            status_code=404,
         )
 
     # Remove the physical file if it exists

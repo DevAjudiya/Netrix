@@ -5,9 +5,10 @@
 # ─────────────────────────────────────────
 
 import logging
+import time
 from typing import Dict
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 from app.config import get_settings
 from app.core.security import get_password_hash
@@ -24,6 +25,27 @@ from app.models.host import Host                # noqa: F401, E402
 from app.models.port import Port                # noqa: F401, E402
 from app.models.vulnerability import Vulnerability  # noqa: F401, E402
 from app.models.report import Report            # noqa: F401, E402
+
+
+# ─────────────────────────────────────────
+# DB readiness wait
+# ─────────────────────────────────────────
+def wait_for_db(max_retries: int = 30, delay: float = 2.0) -> None:
+    """Retry DB connection until MySQL is accepting connections."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            logger.info("[NETRIX] Database ready (attempt %d)", attempt)
+            return
+        except Exception as exc:
+            logger.warning(
+                "[NETRIX] Database not ready (attempt %d/%d): %s",
+                attempt, max_retries, exc,
+            )
+            if attempt < max_retries:
+                time.sleep(delay)
+    raise RuntimeError("Database did not become available after %d attempts" % max_retries)
 
 
 # ─────────────────────────────────────────
@@ -154,6 +176,9 @@ def init_database() -> Dict[str, bool]:
     }
 
     try:
+        # Step 0 — wait for MySQL to accept connections
+        wait_for_db()
+
         # Step 1 — schema
         create_all_tables()
         result["tables_created"] = True

@@ -7,6 +7,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
+
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -68,7 +69,13 @@ async def get_stats(
         total_reports = db.query(Report).filter(
             Report.user_id == uid
         ).count()
-        
+
+        week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        scans_this_week = db.query(Scan).filter(
+            Scan.user_id == uid,
+            Scan.created_at >= week_ago,
+        ).count()
+
         return {
             "total_scans": total_scans,
             "completed_scans": completed,
@@ -77,7 +84,7 @@ async def get_stats(
             "total_vulnerabilities": total_vulns,
             "critical_vulnerabilities": critical,
             "total_reports": total_reports,
-            "scans_this_week": total_scans
+            "scans_this_week": scans_this_week,
         }
     except Exception as e:
         print(f"[NETRIX] Stats error: {e}")

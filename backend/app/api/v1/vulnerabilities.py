@@ -74,7 +74,7 @@ async def list_vulnerabilities(
 
     total = query.count()
     vulns = (
-        query.order_by(Vulnerability.cvss_score.desc().nullslast())
+        query.order_by(Vulnerability.cvss_score.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
@@ -108,7 +108,7 @@ async def lookup_cve(
         dict: CVE detail information including description, CVSS, and remediation.
     """
     cve_service = CVEService(db)
-    cve_detail = cve_service.get_cve_detail(cve_id)
+    cve_detail = await cve_service.get_vulnerability_details(cve_id)
 
     if not cve_detail:
         return {
@@ -169,7 +169,7 @@ async def get_vulnerability_stats(
             Vulnerability.scan_id == scan_id,
             Vulnerability.cve_id.isnot(None),
         )
-        .order_by(Vulnerability.cvss_score.desc().nullslast())
+        .order_by(Vulnerability.cvss_score.desc())
         .limit(10)
         .all()
     )

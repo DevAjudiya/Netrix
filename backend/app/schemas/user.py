@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 # ─────────────────────────────────────────
@@ -18,7 +18,16 @@ class UserBase(BaseModel):
     """Fields shared by creation and response schemas."""
 
     username: str
-    email: EmailStr
+    email: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email_format(cls, value: str) -> str:
+        """Accept standard email format including internal .local domains."""
+        stripped = value.strip().lower()
+        if not re.match(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$", stripped):
+            raise ValueError("Invalid email address format")
+        return stripped
 
 
 # ─────────────────────────────────────────

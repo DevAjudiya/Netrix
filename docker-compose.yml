@@ -4,8 +4,6 @@
 # Author: Netrix Development Team
 # ─────────────────────────────────────────
 
-version: "3.9"
-
 services:
   # ──────────────────────────────────────
   # Netrix Backend — FastAPI application

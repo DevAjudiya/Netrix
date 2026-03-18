@@ -34,7 +34,8 @@ async def get_hosts(
     db: Session = Depends(get_db)
 ):
     try:
-        query = db.query(Host)
+        user_scan_ids = db.query(Scan.id).filter(Scan.user_id == current_user.id)
+        query = db.query(Host).filter(Host.scan_id.in_(user_scan_ids))
         if scan_id:
             query = query.filter(
                 Host.scan_id == scan_id
@@ -196,7 +197,11 @@ async def get_host_vulnerabilities(
     if severity:
         query = query.filter(Vulnerability.severity == severity.lower())
 
-    vulns = query.order_by(Vulnerability.cvss_score.desc().nullslast()).all()
+    # MySQL doesn't support NULLS LAST — sort NULLs to end with IS NULL trick
+    vulns = query.order_by(
+        Vulnerability.cvss_score.is_(None),
+        Vulnerability.cvss_score.desc(),
+    ).all()
 
     return {
         "host_id": host.id,

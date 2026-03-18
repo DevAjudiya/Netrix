@@ -186,6 +186,7 @@ class ReportService:
             raise ReportGenerationException(
                 message="Report not found.",
                 details=f"Report ID {report_id} does not exist.",
+                status_code=404,
             )
 
         if not report.file_path or not os.path.exists(report.file_path):
@@ -226,6 +227,7 @@ class ReportService:
             raise ReportGenerationException(
                 message="Report not found.",
                 details=f"Report ID {report_id} does not exist.",
+                status_code=404,
             )
 
         # Remove file from disk

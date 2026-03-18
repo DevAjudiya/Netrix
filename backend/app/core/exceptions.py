@@ -260,34 +260,6 @@ class CVEFetchException(NetrixBaseException):
 # Report exceptions
 # ─────────────────────────────────────────
 
-class ReportGenerationException(NetrixBaseException):
-    """
-    Raised when report generation (PDF, HTML, CSV, or JSON) fails.
-
-    Possible causes include template errors, disk write failures,
-    or missing scan data required for the report.
-    """
-
-    def __init__(
-        self,
-        message: str = "Failed to generate report. Please try again.",
-        details: Optional[str] = None,
-    ) -> None:
-        """
-        Initialize ReportGenerationException.
-
-        Args:
-            message: Human-readable error description.
-            details: Optional context (e.g. which format failed).
-        """
-        super().__init__(
-            message=message,
-            status_code=500,
-            error_code="REPORT_GENERATION_FAILED",
-            details=details,
-        )
-
-
 # ─────────────────────────────────────────
 # Database exceptions
 # ─────────────────────────────────────────
@@ -368,17 +340,20 @@ class ReportGenerationException(NetrixBaseException):
         self,
         message: str = "Report generation failed.",
         details: Optional[str] = None,
+        status_code: int = 500,
     ) -> None:
         """
         Initialize ReportGenerationException.
 
         Args:
-            message: Human-readable error description.
-            details: Optional specifics about the failure.
+            message:     Human-readable error description.
+            details:     Optional specifics about the failure.
+            status_code: HTTP status code (default 500; use 404 for not-found,
+                         422 for precondition failures).
         """
         super().__init__(
             message=message,
-            status_code=500,
+            status_code=status_code,
             error_code="REPORT_GENERATION_ERROR",
             details=details,
         )
