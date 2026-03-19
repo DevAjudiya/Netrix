@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
+import { useSelector } from 'react-redux'
 import {
     LayoutDashboard, Plus, History, Bug, FileText,
-    ChevronLeft, ChevronRight, Zap
+    ChevronLeft, ChevronRight, ChevronDown, Zap, Users, ScanLine, ClipboardList, HeartPulse, ShieldCheck
 } from 'lucide-react'
 
 const navItems = [
@@ -12,7 +14,19 @@ const navItems = [
     { path: '/reports', icon: FileText, label: 'Reports' },
 ]
 
+const adminNavItems = [
+    { path: '/admin/users', icon: Users, label: 'User Management' },
+    { path: '/admin/scans', icon: ScanLine, label: 'Scan Oversight' },
+    { path: '/admin/logs', icon: ClipboardList, label: 'Audit Logs' },
+    { path: '/admin/health', icon: HeartPulse, label: 'System Health' },
+    { path: '/admin/cve', icon: ShieldCheck, label: 'CVE Control' },
+]
+
 export default function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }) {
+    const user = useSelector(state => state.auth.user)
+    const isAdmin = user?.role === 'admin'
+    const [adminOpen, setAdminOpen] = useState(true)
+
     return (
         <>
             {mobileOpen && (
@@ -62,6 +76,56 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose
                             )}
                         </NavLink>
                     ))}
+
+                    {isAdmin && (
+                        <>
+                            {!collapsed ? (
+                                <button
+                                    onClick={() => setAdminOpen(o => !o)}
+                                    className="w-full flex items-center justify-between px-3 pt-4 pb-1 group"
+                                >
+                                    <span className="text-[10px] font-semibold uppercase tracking-widest text-netrix-muted/60 group-hover:text-netrix-muted transition-colors">
+                                        Admin
+                                    </span>
+                                    <ChevronDown className={`w-3 h-3 text-netrix-muted/50 transition-transform duration-200 ${adminOpen ? '' : '-rotate-90'}`} />
+                                </button>
+                            ) : (
+                                <div className="border-t border-netrix-border/30 my-2" />
+                            )}
+                            {(adminOpen || collapsed) && adminNavItems.map(({ path, icon: Icon, label }) => (
+                                <NavLink
+                                    key={path}
+                                    to={path}
+                                    onClick={onMobileClose}
+                                    className={({ isActive }) => `
+                        flex items-center gap-3 px-3 py-2.5 rounded-lg
+                        transition-all duration-200 group relative
+                        ${isActive
+                                            ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
+                                            : 'text-netrix-muted hover:text-netrix-text hover:bg-netrix-bg/50 border border-transparent'
+                                        }
+                      `}
+                                >
+                                    {({ isActive }) => (
+                                        <>
+                                            {isActive && (
+                                                <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 bg-purple-400 rounded-r" />
+                                            )}
+                                            <Icon className={`w-5 h-5 flex-shrink-0 ${isActive ? 'text-purple-400' : ''}`} />
+                                            {!collapsed && (
+                                                <span className="text-sm font-medium truncate">{label}</span>
+                                            )}
+                                            {collapsed && (
+                                                <span className="absolute left-full ml-3 px-2 py-1 rounded-md bg-netrix-bg text-netrix-text text-xs font-medium whitespace-nowrap opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 shadow-lg border border-netrix-border z-50">
+                                                    {label}
+                                                </span>
+                                            )}
+                                        </>
+                                    )}
+                                </NavLink>
+                            ))}
+                        </>
+                    )}
                 </nav>
 
                 <div className="p-3 border-t border-netrix-border/30">

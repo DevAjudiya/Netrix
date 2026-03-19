@@ -86,14 +86,34 @@ export default function NewScan() {
     const reconnectCountRef = useRef(0)
     const MAX_RECONNECT = 3
 
-    // Validation
-    const validateTarget = (t) => {
-        if (!t.trim()) return 'Target is required'
-        const ipRegex = /^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?$/
-        const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/
+    // Sanitize: strip protocol, paths, ports from URL-style input
+    const sanitizeTarget = (value) => {
+        const trimmed = value.trim()
+        try {
+            const url = new URL(trimmed)
+            return url.hostname  // strips https://, http://, path, port
+        } catch {
+            return trimmed       // not a URL — use as-is
+        }
+    }
+
+    // Smart context-aware validation error messages
+    const validateTarget = (raw) => {
+        if (!raw.trim()) return 'Target is required — enter an IP, CIDR range, or domain'
+        if (/https?:\/\//i.test(raw)) {
+            return 'Remove the https:// prefix — use just the domain e.g. tapidiploma.org'
+        }
+        const t = sanitizeTarget(raw)
+        if (!t) return 'Target is required — enter an IP, CIDR range, or domain'
+        if (/[;|&$`\\><"'{}()!]/.test(t)) {
+            return 'Invalid target — only use letters, numbers, dots, dashes, and / for CIDR ranges'
+        }
+        const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/
         const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/
-        if (!ipRegex.test(t) && !domainRegex.test(t) && !cidrRegex.test(t)) {
-            return 'Enter a valid IP, CIDR, or domain'
+        const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/
+        if (!ipRegex.test(t) && !cidrRegex.test(t) && !domainRegex.test(t)) {
+            if (t.includes('/')) return 'Use just the domain or IP — no paths or slashes e.g. example.com'
+            return 'Enter a valid target: IP (10.0.0.1), CIDR (10.0.0.0/24), or domain (example.com)'
         }
         return null
     }
@@ -388,10 +408,12 @@ export default function NewScan() {
         const validationError = validateTarget(target)
         if (validationError) return setError(validationError)
 
+        const cleanTarget = sanitizeTarget(target)
+        setTarget(cleanTarget)
         setError('')
         setLaunching(true)
         try {
-            const res = await scansAPI.create(target, scanType)
+            const res = await scansAPI.create(cleanTarget, scanType)
             const scan = res.data
             setScanInfo(scan)
             dispatch(setActiveScan(scan))
@@ -478,13 +500,17 @@ export default function NewScan() {
                                 <input
                                     type="text"
                                     value={target}
-                                    onChange={(e) => setTarget(e.target.value)}
+                                    onChange={(e) => { setTarget(e.target.value); setError('') }}
+                                    onBlur={(e) => { const s = sanitizeTarget(e.target.value); if (s !== e.target.value.trim()) setTarget(s) }}
                                     placeholder="e.g. 192.168.1.0/24 or example.com"
                                     className="w-full bg-transparent py-3 pr-4 text-netrix-text placeholder-netrix-muted/50 focus:outline-none font-mono"
                                     autoComplete="off"
                                     onKeyDown={(e) => e.key === 'Enter' && handleLaunch()}
                                 />
                             </div>
+                            <p className="text-xs text-netrix-muted/60 mt-1.5 ml-1">
+                                Enter IP (192.168.1.1), CIDR (192.168.1.0/24), or domain (example.com) — https:// is removed automatically
+                            </p>
                         </div>
 
                         {/* Scan Type */}

@@ -60,6 +60,16 @@ class User(Base):
         default=True,
         server_default="1",
     )
+    is_banned: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="0",
+    )
+    ban_reason: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+    )
 
     # ── Timestamps ───────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
@@ -109,6 +119,8 @@ class User(Base):
             "email": self.email,
             "role": self.role,
             "is_active": self.is_active,
+            "is_banned": self.is_banned,
+            "ban_reason": self.ban_reason,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "last_login": self.last_login.isoformat() if self.last_login else None,

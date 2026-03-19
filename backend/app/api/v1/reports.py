@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,7 @@ from app.database.session import get_db
 from app.models.report import Report
 from app.models.scan import Scan
 from app.schemas.report import ReportCreate, ReportResponse
+from app.services.audit_service import log_event
 from app.services.report_service import ReportService
 
 logger = logging.getLogger("netrix")
@@ -174,6 +175,7 @@ async def get_report(
 )
 async def download_report(
     report_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -221,6 +223,8 @@ async def download_report(
     }
     media_type = content_type_map.get(report.format, "application/octet-stream")
 
+    log_event(db, current_user.id, "report_download", request,
+              {"report_id": report.id, "report_name": report.report_name, "format": report.format})
     logger.info(
         "[NETRIX] Report %s downloaded by user '%s'.",
         report.report_name, current_user.username,

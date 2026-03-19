@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useDispatch, useSelector } from 'react-redux'
+import AdminSummary from '../components/AdminSummary'
 import { setStats, setRecentScans, setVulnChart, setDashLoading } from '../store'
 import { dashboardAPI } from '../services/api'
 import { Pie } from 'react-chartjs-2'
@@ -32,6 +33,8 @@ export default function Dashboard() {
     const navigate = useNavigate()
     const dispatch = useDispatch()
     const { stats, recentScans, vulnChart, loading } = useSelector(s => s.dashboard)
+    const { user } = useSelector(s => s.auth)
+    const isAdmin = user?.role === 'admin'
     const [fetchError, setFetchError] = useState(null)
 
     useEffect(() => {
@@ -184,8 +187,11 @@ export default function Dashboard() {
                     ))}
                 </div>
 
+                {/* Admin Summary Widget */}
+                {isAdmin && <AdminSummary />}
+
                 {/* Charts & Recent */}
-                <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+                <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 mt-6">
                     {/* Pie Chart */}
                     <div className="lg:col-span-2 glass-card p-6">
                         <h2 className="text-lg font-semibold text-netrix-text mb-4 flex items-center gap-2">

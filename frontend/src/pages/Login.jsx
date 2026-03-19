@@ -106,10 +106,7 @@ export default function Login() {
                         </div>
                     )}
 
-                    <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off" role="presentation">
-                        {/* Hidden dummy fields to prevent browser credential detection */}
-                        <input type="text" name="prevent_autofill" id="prevent_autofill" autoComplete="off" style={{ display: 'none' }} tabIndex={-1} />
-                        <input type="password" name="prevent_autofill_pass" id="prevent_autofill_pass" autoComplete="off" style={{ display: 'none' }} tabIndex={-1} />
+                    <form onSubmit={handleSubmit} className="space-y-4">
 
                         <div>
                             <label className="block text-sm font-medium text-netrix-muted mb-1.5">Username</label>
@@ -119,18 +116,14 @@ export default function Login() {
                                 </span>
                                 <input
                                     id="netrix-usr-field"
-                                    name="netrix-usr-field"
-                                    type="search"
-                                    role="textbox"
+                                    name="username"
+                                    type="text"
                                     value={username}
                                     onChange={(e) => setUsername(e.target.value)}
                                     placeholder="Enter your username"
                                     className="w-full bg-transparent py-3 pr-4 text-netrix-text placeholder-netrix-muted/50 focus:outline-none"
                                     autoFocus
-                                    autoComplete="off"
-                                    data-lpignore="true"
-                                    data-form-type="other"
-                                    data-1p-ignore
+                                    autoComplete="username"
                                     disabled={loading}
                                 />
                             </div>
@@ -144,16 +137,13 @@ export default function Login() {
                                 </span>
                                 <input
                                     id="netrix-key-field"
-                                    name="netrix-key-field"
+                                    name="password"
                                     type={showPassword ? 'text' : 'password'}
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
                                     placeholder="Enter your password"
                                     className="w-full bg-transparent py-3 pr-10 text-netrix-text placeholder-netrix-muted/50 focus:outline-none"
-                                    autoComplete="off"
-                                    data-lpignore="true"
-                                    data-form-type="other"
-                                    data-1p-ignore
+                                    autoComplete="current-password"
                                     disabled={loading}
                                 />
                                 <button

@@ -1,11 +1,15 @@
 import { configureStore, createSlice } from '@reduxjs/toolkit'
 
+const _hasToken = !!localStorage.getItem('netrix_token')
+
 const authSlice = createSlice({
     name: 'auth',
     initialState: {
         user: null,
         token: localStorage.getItem('netrix_token'),
-        isAuthenticated: !!localStorage.getItem('netrix_token'),
+        isAuthenticated: _hasToken,
+        // true while we're fetching /auth/me to restore the session on page load
+        userLoading: _hasToken,
         loading: false,
         error: null
     },
@@ -14,6 +18,7 @@ const authSlice = createSlice({
             state.user = action.payload.user
             state.token = action.payload.token
             state.isAuthenticated = true
+            state.userLoading = false
             state.error = null
             localStorage.setItem('netrix_token', action.payload.token)
         },
@@ -21,10 +26,15 @@ const authSlice = createSlice({
             state.user = null
             state.token = null
             state.isAuthenticated = false
+            state.userLoading = false
             localStorage.removeItem('netrix_token')
         },
         setUser: (state, action) => {
             state.user = action.payload
+            state.userLoading = false
+        },
+        setUserLoading: (state, action) => {
+            state.userLoading = action.payload
         },
         setError: (state, action) => {
             state.error = action.payload
@@ -89,7 +99,7 @@ const dashboardSlice = createSlice({
 })
 
 export const {
-    loginSuccess, logout, setUser,
+    loginSuccess, logout, setUser, setUserLoading,
     setError: setAuthError
 } = authSlice.actions
 

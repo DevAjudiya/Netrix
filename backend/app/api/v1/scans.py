@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 from fastapi import (
     APIRouter, BackgroundTasks, Depends,
-    HTTPException, Query, WebSocket,
+    HTTPException, Query, Request, WebSocket,
     WebSocketDisconnect, status,
 )
 from sqlalchemy.orm import Session
@@ -23,6 +23,7 @@ from typing import List, Optional
 from app.core.security import get_current_user
 from app.database.session import get_db
 from app.dependencies import get_scan_manager
+from app.services.audit_service import log_event
 from app.models.host import Host
 from app.models.port import Port
 from app.models.scan import Scan
@@ -229,6 +230,7 @@ async def run_scan_background(
 )
 async def create_scan(
     scan_data: ScanCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
     scan_manager: ScanManager = Depends(get_scan_manager),
@@ -259,6 +261,8 @@ async def create_scan(
         custom_ports=scan_data.custom_ports or "",
     )
 
+    log_event(db, current_user.id, "scan_start", request,
+              {"scan_id": scan.scan_id, "target": scan.target, "scan_type": scan.scan_type})
     logger.info(
         "[NETRIX] Scan %s created and launched by user '%s'.",
         scan.scan_id, current_user.username,
@@ -502,6 +506,7 @@ async def get_scan_vulns(
 )
 async def delete_scan(
     scan_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -509,7 +514,11 @@ async def delete_scan(
     Delete a completed or failed scan and all associated data.
     """
     service = ScanService(db)
+    # Capture scan_id string before deletion for audit log
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    scan_id_str = scan.scan_id if scan else str(scan_id)
     service.delete_scan(scan_id, current_user.id)
+    log_event(db, current_user.id, "scan_delete", request, {"scan_id": scan_id_str})
     return {"message": f"Scan {scan_id} deleted successfully."}
 
 

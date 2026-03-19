@@ -317,6 +317,17 @@ def validate_target(target: str, allow_private: bool = False) -> Tuple[str, str]
             message="Scan target cannot be empty.",
         )
 
+    # Strip URL protocol prefix (http:// or https://) and extract hostname
+    if cleaned_target.startswith(("http://", "https://")):
+        from urllib.parse import urlparse
+        parsed = urlparse(cleaned_target)
+        hostname = parsed.hostname or ""
+        if not hostname:
+            raise InvalidTargetException(
+                message="Could not extract a hostname from the provided URL.",
+            )
+        cleaned_target = hostname
+
     # First, sanitize the input string
     cleaned_target = sanitize_string(cleaned_target)
 

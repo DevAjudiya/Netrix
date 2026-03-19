@@ -7,7 +7,7 @@
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.security import get_current_user
 from app.database.session import get_db
 from app.schemas.user import Token, UserCreate, UserLogin, UserResponse
+from app.services.audit_service import log_event
 from app.services.auth_service import AuthService
 
 
@@ -34,6 +35,7 @@ router = APIRouter()
 )
 async def login(
     credentials: UserLogin,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """
@@ -45,20 +47,31 @@ async def login(
     Raises:
         AuthenticationException: If credentials are invalid.
     """
-    auth_service = AuthService(db)
-    token_data = auth_service.authenticate_user(
-        username=credentials.username,
-        password=credentials.password,
-    )
-
-    # Update last_login timestamp
+    from app.core.exceptions import AuthenticationException
     from app.models.user import User
 
+    auth_service = AuthService(db)
+    try:
+        token_data = auth_service.authenticate_user(
+            username=credentials.username,
+            password=credentials.password,
+        )
+    except AuthenticationException as exc:
+        # Log the failed attempt before re-raising
+        failed_user = db.query(User).filter(User.username == credentials.username).first()
+        log_event(
+            db, failed_user.id if failed_user else None, "login_failed",
+            request, {"username": credentials.username},
+        )
+        raise
+
+    # Update last_login timestamp
     user = db.query(User).filter(User.username == credentials.username).first()
     if user:
         user.last_login = datetime.now(timezone.utc)
         db.commit()
 
+    log_event(db, user.id if user else None, "login", request)
     logger.info("[NETRIX] User '%s' logged in successfully.", credentials.username)
 
     return Token(
@@ -181,7 +194,9 @@ async def get_me(
     summary="Logout current user",
 )
 async def logout(
+    request: Request,
     current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Invalidate the current session.
@@ -194,6 +209,7 @@ async def logout(
     Returns:
         dict: Confirmation message.
     """
+    log_event(db, current_user.id, "logout", request)
     logger.info("[NETRIX] User '%s' logged out.", current_user.username)
     return {
         "message": "Logged out successfully.",

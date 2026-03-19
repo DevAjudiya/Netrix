@@ -266,4 +266,12 @@ async def get_current_user(
             details="Your account has been deactivated. Contact an administrator.",
         )
 
+    # Ensure the user is not banned
+    if user.is_banned:
+        reason = user.ban_reason or "No reason provided."
+        raise AuthenticationException(
+            message="User account is banned.",
+            details=f"Your account has been suspended. Reason: {reason}",
+        )
+
     return user

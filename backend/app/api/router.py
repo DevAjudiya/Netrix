@@ -6,7 +6,7 @@
 
 from fastapi import APIRouter
 
-from app.api.v1 import auth, scans, reports, vulnerabilities, hosts, dashboard
+from app.api.v1 import admin, auth, scans, reports, vulnerabilities, hosts, dashboard
 
 api_router = APIRouter()
 
@@ -40,4 +40,9 @@ api_router.include_router(
     dashboard.router,
     prefix="/v1/dashboard",
     tags=["Dashboard"],
+)
+api_router.include_router(
+    admin.router,
+    prefix="/v1/admin",
+    tags=["Admin"],
 )

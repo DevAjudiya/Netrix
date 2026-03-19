@@ -5,6 +5,7 @@
 # Author: Netrix Development Team
 # ─────────────────────────────────────────
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -22,6 +23,7 @@ from app.core.middleware import (
 )
 from app.api.router import api_router
 from app.database.init_db import init_database
+from app.core.metrics_task import metrics_loop
 
 # ─────────────────────────────────────────
 # Logging configuration
@@ -74,10 +76,19 @@ async def lifespan(app: FastAPI):
 
     logger.info("[NETRIX] Application started successfully.")
 
+    # Start background metrics collection
+    metrics_task = asyncio.create_task(metrics_loop(app.state))
+    logger.info("[NETRIX] Background metrics task launched.")
+
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────
     logger.info("[NETRIX] Shutting down...")
+    metrics_task.cancel()
+    try:
+        await metrics_task
+    except asyncio.CancelledError:
+        pass
     if app.state.redis:
         await app.state.redis.close()
         logger.info("[NETRIX] Redis connection closed.")

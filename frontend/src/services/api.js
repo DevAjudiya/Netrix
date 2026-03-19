@@ -99,4 +99,22 @@ export const hostsAPI = {
   vulns: (hostId) => api.get(`/hosts/${hostId}/vulnerabilities`)
 }
 
+export const adminAPI = {
+  stats: () => api.get('/admin/stats'),
+  listUsers: (params) => api.get('/admin/users', { params }),
+  updateUser: (userId, data) => api.patch(`/admin/users/${userId}`, data),
+  deleteUser: (userId) => api.delete(`/admin/users/${userId}`),
+  resetPassword: (userId) => api.post(`/admin/users/${userId}/reset-password`),
+  listScans: (params) => api.get('/admin/scans', { params }),
+  deleteScan: (scanId) => api.delete(`/admin/scans/${scanId}`),
+  stopScan: (scanId) => api.post(`/admin/scans/${scanId}/stop`),
+  listLogs: (params) => api.get('/admin/logs', { params }),
+  health: () => api.get('/admin/health'),
+  metrics: (hours = 24) => api.get('/admin/metrics', { params: { hours } }),
+  cveStatus: () => api.get('/admin/cve/status'),
+  cveSync: () => api.post('/admin/cve/sync'),
+  cveRematch: () => api.post('/admin/cve/rematch'),
+  cveList: (params) => api.get('/admin/cve/list', { params })
+}
+
 export default api

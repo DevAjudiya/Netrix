@@ -14,6 +14,7 @@ export default function Register() {
     const [showConfirmPassword, setShowConfirmPassword] = useState(false)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
+    const [readOnly, setReadOnly] = useState(true)
 
     const handleSubmit = async (e) => {
         e.preventDefault()
@@ -95,12 +96,15 @@ export default function Register() {
                                 </span>
                                 <input
                                     type="text"
+                                    name="register-username"
                                     value={username}
                                     onChange={(e) => setUsername(e.target.value)}
                                     placeholder="Choose a username"
                                     className="w-full bg-transparent py-3 pr-4 text-netrix-text placeholder-netrix-muted/50 focus:outline-none"
                                     autoFocus
                                     autoComplete="off"
+                                    readOnly={readOnly}
+                                    onFocus={() => setReadOnly(false)}
                                     disabled={loading}
                                 />
                             </div>
@@ -114,6 +118,7 @@ export default function Register() {
                                 </span>
                                 <input
                                     type="email"
+                                    name="register-email"
                                     value={email}
                                     onChange={(e) => setEmail(e.target.value)}
                                     placeholder="Enter your email"
@@ -132,11 +137,14 @@ export default function Register() {
                                 </span>
                                 <input
                                     type={showPassword ? 'text' : 'password'}
+                                    name="new-password"
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
                                     placeholder="Choose a password"
                                     className="w-full bg-transparent py-3 pr-10 text-netrix-text placeholder-netrix-muted/50 focus:outline-none"
-                                    autoComplete="off"
+                                    autoComplete="new-password"
+                                    readOnly={readOnly}
+                                    onFocus={() => setReadOnly(false)}
                                     disabled={loading}
                                 />
                                 <button
@@ -157,11 +165,12 @@ export default function Register() {
                                 </span>
                                 <input
                                     type={showConfirmPassword ? 'text' : 'password'}
+                                    name="confirm-password"
                                     value={confirmPassword}
                                     onChange={(e) => setConfirmPassword(e.target.value)}
                                     placeholder="Repeat your password"
                                     className="w-full bg-transparent py-3 pr-10 text-netrix-text placeholder-netrix-muted/50 focus:outline-none"
-                                    autoComplete="off"
+                                    autoComplete="new-password"
                                     disabled={loading}
                                 />
                                 <button

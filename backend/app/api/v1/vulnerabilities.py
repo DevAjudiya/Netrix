@@ -8,7 +8,7 @@ import logging
 import math
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
@@ -16,6 +16,7 @@ from app.core.exceptions import ScanNotFoundException
 from app.core.security import get_current_user
 from app.database.session import get_db
 from app.dependencies import get_cve_engine
+from app.services.audit_service import log_event
 from app.models.scan import Scan
 from app.models.vulnerability import Vulnerability
 from app.schemas.vulnerability import (
@@ -100,6 +101,7 @@ async def list_vulnerabilities(
 )
 async def lookup_cve(
     cve_id: str,
+    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -113,6 +115,8 @@ async def lookup_cve(
     """
     cve_service = CVEService(db)
     cve_detail = await cve_service.get_vulnerability_details(cve_id)
+
+    log_event(db, current_user.id, "cve_sync", request, {"cve_id": cve_id, "found": bool(cve_detail)})
 
     if not cve_detail:
         return {

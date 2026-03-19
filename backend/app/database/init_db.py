@@ -25,6 +25,8 @@ from app.models.host import Host                # noqa: F401, E402
 from app.models.port import Port                # noqa: F401, E402
 from app.models.vulnerability import Vulnerability  # noqa: F401, E402
 from app.models.report import Report            # noqa: F401, E402
+from app.models.audit_log import AuditLog       # noqa: F401, E402
+from app.models.system_metric import SystemMetric  # noqa: F401, E402
 
 
 # ─────────────────────────────────────────

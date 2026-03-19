@@ -3,9 +3,11 @@
 # Purpose: Business logic layer for CVE operations
 # ─────────────────────────────────────────
 
+import json
 import logging
+import os
 import re as _re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 _CVE_RE = _re.compile(r'^CVE-\d{4}-\d+$', _re.IGNORECASE)
@@ -472,3 +474,252 @@ class CVEService:
                 "overall_risk_score": 0,
                 "error": str(exc),
             }
+
+
+# ─────────────────────────────────────────
+# NVD Sync
+# ─────────────────────────────────────────
+
+def sync_nvd_database() -> Dict:
+    """
+    Synchronise the offline CVE JSON database with the NVD API.
+
+    Fetches CVEs modified since the last sync (stored in Redis) or the
+    last 30 days when no prior sync is recorded.  Merges new entries into
+    the offline JSON file and updates Redis metadata.
+
+    Always called in a background thread (FastAPI BackgroundTasks) so it
+    is safe to block and use synchronous I/O.
+
+    Returns:
+        dict: {"added": int, "skipped": int, "total": int}
+    """
+    from app.config import get_settings
+
+    settings = get_settings()
+    db_path = settings.OFFLINE_CVE_DB_PATH
+    added = skipped = 0
+
+    # Synchronous Redis client (independent of app.state.redis which is async)
+    r = None
+    try:
+        import redis as _sync_redis
+        r = _sync_redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    except Exception as redis_err:
+        logger.warning("[CVE SYNC] Could not connect to Redis: %s", redis_err)
+
+    try:
+        engine = CVEEngine()
+
+        # ── Determine sync window ──────────────────────────────────────
+        last_sync_dt = datetime.now(timezone.utc) - timedelta(days=30)
+        if r:
+            try:
+                stored = r.get("netrix:cve:last_sync")
+                if stored:
+                    last_sync_dt = datetime.fromisoformat(stored)
+            except Exception:
+                pass
+
+        start_str = last_sync_dt.strftime("%Y-%m-%dT%H:%M:%S.000")
+        end_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000")
+
+        logger.info("[CVE SYNC] Fetching CVEs modified %s → %s", start_str, end_str)
+
+        # ── Fetch from NVD ────────────────────────────────────────────
+        engine._rate_limit()
+        resp = engine.session.get(
+            settings.NVD_API_URL,
+            params={
+                "lastModStartDate": start_str,
+                "lastModEndDate": end_str,
+                "resultsPerPage": 100,
+            },
+            timeout=30,
+        )
+
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get("vulnerabilities", []):
+                detail = engine._parse_nvd_item(item, source="nvd_api")
+                if not (detail and detail.cve_id):
+                    continue
+                if detail.cve_id in engine._offline_db:
+                    skipped += 1
+                    continue
+                engine._offline_db[detail.cve_id] = {
+                    "title": detail.title,
+                    "description": detail.description,
+                    "cvss_score": detail.cvss_score,
+                    "cvss_vector": detail.cvss_vector,
+                    "severity": detail.severity,
+                    "published_date": detail.published_date[:10] if detail.published_date else "",
+                    "affected": detail.affected_products,
+                    "remediation": detail.remediation,
+                    "references": detail.references,
+                }
+                added += 1
+
+            # ── Persist updated offline DB ──────────────────────────────
+            try:
+                os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
+                with open(db_path, "w", encoding="utf-8") as fh:
+                    json.dump(engine._offline_db, fh, indent=2)
+                logger.info("[CVE SYNC] Offline DB saved: added=%d skipped=%d total=%d",
+                            added, skipped, len(engine._offline_db))
+            except IOError as io_err:
+                logger.error("[CVE SYNC] Failed to write offline DB: %s", io_err)
+        else:
+            logger.warning("[CVE SYNC] NVD API returned HTTP %d", resp.status_code)
+
+        # ── Update Redis metadata ──────────────────────────────────────
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if r:
+            try:
+                r.set("netrix:cve:last_sync", now_iso)
+                r.set("netrix:cve:last_sync_count", str(added))
+                r.set("netrix:cve:last_sync_total", str(len(engine._offline_db)))
+            except Exception as redis_err:
+                logger.warning("[CVE SYNC] Could not write Redis metadata: %s", redis_err)
+
+        logger.info("[CVE SYNC] Sync complete — added=%d skipped=%d", added, skipped)
+
+    except Exception as exc:
+        logger.error("[CVE SYNC] Unexpected error: %s", exc)
+    finally:
+        if r:
+            try:
+                r.delete("netrix:cve:sync_in_progress")
+            except Exception:
+                pass
+        if r:
+            try:
+                r.close()
+            except Exception:
+                pass
+
+    return {"added": added, "skipped": skipped}
+
+
+# ─────────────────────────────────────────
+# CVE Rematch
+# ─────────────────────────────────────────
+
+def rematch_all_scans(db: Session) -> Dict:
+    """
+    Re-run CVE matching against all existing port data in the database.
+
+    For each port that has a ``service_name``, queries the CVE engine
+    (offline DB first, then NVD API) and inserts any newly discovered
+    vulnerabilities that are not already recorded for that port.
+
+    Args:
+        db: SQLAlchemy session to use for all queries and inserts.
+
+    Returns:
+        dict: {"scans_processed", "ports_processed", "vulnerabilities_added"}
+    """
+    from datetime import date as _date
+    from app.models.scan import Scan
+    from app.models.host import Host
+    from app.models.port import Port
+
+    engine = CVEEngine()
+    scans_processed = ports_processed = vulnerabilities_added = 0
+
+    try:
+        scans = db.query(Scan).all()
+        logger.info("[REMATCH] Starting rematch across %d scans", len(scans))
+
+        for scan in scans:
+            scans_processed += 1
+            hosts = db.query(Host).filter(Host.scan_id == scan.id).all()
+
+            for host in hosts:
+                ports = db.query(Port).filter(Port.host_id == host.id).all()
+
+                for port in ports:
+                    if not port.service_name:
+                        continue
+
+                    ports_processed += 1
+                    svc_name = port.product or port.service_name or ""
+                    version = port.version or ""
+                    cpe = port.cpe or ""
+
+                    cve_list = engine.match_service_to_cves(svc_name, version, cpe)
+                    if not cve_list:
+                        continue
+
+                    # Existing CVE IDs for this port — skip duplicates
+                    existing_ids = {
+                        row[0]
+                        for row in db.query(Vulnerability.cve_id)
+                        .filter(
+                            Vulnerability.scan_id == scan.id,
+                            Vulnerability.port_id == port.id,
+                        )
+                        .all()
+                    }
+
+                    for cve in cve_list:
+                        if cve.cve_id in existing_ids:
+                            continue
+
+                        pub_date = None
+                        if cve.published_date:
+                            try:
+                                pub_date = datetime.strptime(
+                                    cve.published_date[:10], "%Y-%m-%d"
+                                ).date()
+                            except (ValueError, TypeError):
+                                pass
+
+                        db.add(Vulnerability(
+                            scan_id=scan.id,
+                            host_id=host.id,
+                            port_id=port.id,
+                            cve_id=cve.cve_id,
+                            cvss_score=cve.cvss_score,
+                            cvss_vector=cve.cvss_vector,
+                            severity=cve.severity,
+                            title=(cve.title or cve.cve_id)[:255],
+                            description=cve.description,
+                            remediation=cve.remediation,
+                            published_date=pub_date,
+                            source=cve.source if cve.source in (
+                                "nvd_api", "offline_db", "nse_script"
+                            ) else "offline_db",
+                        ))
+                        existing_ids.add(cve.cve_id)
+                        vulnerabilities_added += 1
+
+        try:
+            db.commit()
+        except Exception as commit_err:
+            db.rollback()
+            logger.error("[REMATCH] Commit failed: %s", commit_err)
+
+        logger.info(
+            "[REMATCH] Complete — scans=%d ports=%d vulns_added=%d",
+            scans_processed, ports_processed, vulnerabilities_added,
+        )
+
+    except Exception as exc:
+        logger.error("[REMATCH] Failed: %s", exc)
+
+    return {
+        "scans_processed": scans_processed,
+        "ports_processed": ports_processed,
+        "vulnerabilities_added": vulnerabilities_added,
+    }
+
+
+def _rematch_background_task() -> None:
+    """Wrapper for use with FastAPI BackgroundTasks — creates its own DB session."""
+    from app.database.session import SessionLocal
+    db = SessionLocal()
+    try:
+        rematch_all_scans(db)
+    finally:
+        db.close()

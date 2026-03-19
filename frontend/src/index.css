@@ -461,6 +461,22 @@ input:-webkit-autofill:focus {
   }
 }
 
+/* ─── Slide In Right (toast) ─── */
+.animate-slide-in-right {
+  animation: slideInRight 0.25s ease-out;
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 /* ─── Terminal Scrollbar ─── */
 .terminal-body::-webkit-scrollbar {
   width: 4px;
