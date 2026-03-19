@@ -5,8 +5,13 @@ Tests all 7.1-7.9 requirements.
 import re
 from playwright.sync_api import sync_playwright, expect
 
+import os
+
 BASE = "http://localhost:3000"
-CREDS = {"username": "netrix_admin", "password": "Admin@Netrix123"}
+CREDS = {
+    "username": os.environ["TEST_ADMIN_USERNAME"],
+    "password": os.environ["TEST_ADMIN_PASSWORD"],
+}
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -68,7 +73,7 @@ def test_71_login(page, r):
         r.fail("Empty fields shows validation error")
 
     # Wrong password
-    page.locator("#netrix-usr-field").fill("netrix_admin")
+    page.locator("#netrix-usr-field").fill(CREDS["username"])
     page.locator("#netrix-key-field").fill("wrongpassword999")
     page.locator("#login-submit").click()
     page.wait_for_timeout(2000)

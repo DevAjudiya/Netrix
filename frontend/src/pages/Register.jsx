@@ -1,19 +1,17 @@
 import { useState } from 'react'
-import { useDispatch } from 'react-redux'
-import { useNavigate, useLocation } from 'react-router-dom'
-import { loginSuccess, setAuthError } from '../store'
+import { useNavigate } from 'react-router-dom'
 import { authAPI } from '../services/api'
-import { Shield, Eye, EyeOff, Loader2, Lock, User, CheckCircle } from 'lucide-react'
+import { Shield, Eye, EyeOff, Loader2, Lock, User, Mail, CheckCircle } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 
-export default function Login() {
-    const dispatch = useDispatch()
+export default function Register() {
     const navigate = useNavigate()
-    const location = useLocation()
-    const registered = location.state?.registered
     const [username, setUsername] = useState('')
+    const [email, setEmail] = useState('')
     const [password, setPassword] = useState('')
+    const [confirmPassword, setConfirmPassword] = useState('')
     const [showPassword, setShowPassword] = useState(false)
+    const [showConfirmPassword, setShowConfirmPassword] = useState(false)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
 
@@ -22,31 +20,20 @@ export default function Login() {
         setError('')
 
         if (!username.trim()) return setError('Username is required')
+        if (!email.trim()) return setError('Email is required')
         if (!password.trim()) return setError('Password is required')
+        if (password !== confirmPassword) return setError('Passwords do not match')
 
         setLoading(true)
         try {
-            const res = await authAPI.login(username, password)
-            const { access_token } = res.data
-
-            // Store token so the axios interceptor attaches it to subsequent requests
-            localStorage.setItem('netrix_token', access_token)
-
-            // Fetch the authenticated user's profile
-            const meRes = await authAPI.me()
-            const user = meRes.data
-
-            dispatch(loginSuccess({ token: access_token, user }))
-            navigate('/dashboard', { replace: true })
+            await authAPI.register(username, email, password)
+            navigate('/login', { state: { registered: true } })
         } catch (err) {
-            // Clean up token if /me request failed after login
-            localStorage.removeItem('netrix_token')
             const msg =
                 err.response?.data?.message ||
                 err.response?.data?.detail ||
-                'Invalid credentials. Please try again.'
+                'Registration failed. Please try again.'
             setError(msg)
-            dispatch(setAuthError(msg))
         } finally {
             setLoading(false)
         }
@@ -85,19 +72,12 @@ export default function Login() {
                     <p className="text-netrix-muted text-sm">Network Security Suite</p>
                 </div>
 
-                {/* Login Card */}
+                {/* Register Card */}
                 <div className="glass-card p-8 glow-cyan">
                     <div className="mb-6">
-                        <h2 className="text-xl font-semibold text-netrix-text">Welcome back</h2>
-                        <p className="text-sm text-netrix-muted mt-1">Sign in to your security console</p>
+                        <h2 className="text-xl font-semibold text-netrix-text">Create account</h2>
+                        <p className="text-sm text-netrix-muted mt-1">Register for your security console</p>
                     </div>
-
-                    {registered && (
-                        <div className="mb-4 p-3 rounded-lg bg-green-500/10 border border-green-500/30 flex items-center gap-2">
-                            <CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0" />
-                            <p className="text-sm text-green-400">Account created successfully. Please sign in.</p>
-                        </div>
-                    )}
 
                     {error && (
                         <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center gap-2">
@@ -106,11 +86,7 @@ export default function Login() {
                         </div>
                     )}
 
-                    <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off" role="presentation">
-                        {/* Hidden dummy fields to prevent browser credential detection */}
-                        <input type="text" name="prevent_autofill" id="prevent_autofill" autoComplete="off" style={{ display: 'none' }} tabIndex={-1} />
-                        <input type="password" name="prevent_autofill_pass" id="prevent_autofill_pass" autoComplete="off" style={{ display: 'none' }} tabIndex={-1} />
-
+                    <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
                         <div>
                             <label className="block text-sm font-medium text-netrix-muted mb-1.5">Username</label>
                             <div className="flex items-center bg-netrix-bg border border-netrix-border rounded-lg focus-within:border-netrix-accent focus-within:ring-1 focus-within:ring-netrix-accent/30 transition-all duration-200">
@@ -118,19 +94,31 @@ export default function Login() {
                                     <User className="w-4 h-4" />
                                 </span>
                                 <input
-                                    id="netrix-usr-field"
-                                    name="netrix-usr-field"
-                                    type="search"
-                                    role="textbox"
+                                    type="text"
                                     value={username}
                                     onChange={(e) => setUsername(e.target.value)}
-                                    placeholder="Enter your username"
+                                    placeholder="Choose a username"
                                     className="w-full bg-transparent py-3 pr-4 text-netrix-text placeholder-netrix-muted/50 focus:outline-none"
                                     autoFocus
                                     autoComplete="off"
-                                    data-lpignore="true"
-                                    data-form-type="other"
-                                    data-1p-ignore
+                                    disabled={loading}
+                                />
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-netrix-muted mb-1.5">Email</label>
+                            <div className="flex items-center bg-netrix-bg border border-netrix-border rounded-lg focus-within:border-netrix-accent focus-within:ring-1 focus-within:ring-netrix-accent/30 transition-all duration-200">
+                                <span className="flex items-center justify-center w-10 shrink-0 text-netrix-muted/50">
+                                    <Mail className="w-4 h-4" />
+                                </span>
+                                <input
+                                    type="email"
+                                    value={email}
+                                    onChange={(e) => setEmail(e.target.value)}
+                                    placeholder="Enter your email"
+                                    className="w-full bg-transparent py-3 pr-4 text-netrix-text placeholder-netrix-muted/50 focus:outline-none"
+                                    autoComplete="off"
                                     disabled={loading}
                                 />
                             </div>
@@ -143,17 +131,12 @@ export default function Login() {
                                     <Lock className="w-4 h-4" />
                                 </span>
                                 <input
-                                    id="netrix-key-field"
-                                    name="netrix-key-field"
                                     type={showPassword ? 'text' : 'password'}
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
-                                    placeholder="Enter your password"
+                                    placeholder="Choose a password"
                                     className="w-full bg-transparent py-3 pr-10 text-netrix-text placeholder-netrix-muted/50 focus:outline-none"
                                     autoComplete="off"
-                                    data-lpignore="true"
-                                    data-form-type="other"
-                                    data-1p-ignore
                                     disabled={loading}
                                 />
                                 <button
@@ -166,8 +149,32 @@ export default function Login() {
                             </div>
                         </div>
 
+                        <div>
+                            <label className="block text-sm font-medium text-netrix-muted mb-1.5">Confirm Password</label>
+                            <div className="flex items-center bg-netrix-bg border border-netrix-border rounded-lg focus-within:border-netrix-accent focus-within:ring-1 focus-within:ring-netrix-accent/30 transition-all duration-200 relative">
+                                <span className="flex items-center justify-center w-10 shrink-0 text-netrix-muted/50">
+                                    <CheckCircle className="w-4 h-4" />
+                                </span>
+                                <input
+                                    type={showConfirmPassword ? 'text' : 'password'}
+                                    value={confirmPassword}
+                                    onChange={(e) => setConfirmPassword(e.target.value)}
+                                    placeholder="Repeat your password"
+                                    className="w-full bg-transparent py-3 pr-10 text-netrix-text placeholder-netrix-muted/50 focus:outline-none"
+                                    autoComplete="off"
+                                    disabled={loading}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-netrix-muted/50 hover:text-netrix-muted transition-colors"
+                                >
+                                    {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                </button>
+                            </div>
+                        </div>
+
                         <button
-                            id="login-submit"
                             type="submit"
                             disabled={loading}
                             className="w-full btn-primary flex items-center justify-center gap-2 mt-6"
@@ -175,28 +182,26 @@ export default function Login() {
                             {loading ? (
                                 <>
                                     <Loader2 className="w-4 h-4 animate-spin" />
-                                    Authenticating...
+                                    Creating account...
                                 </>
                             ) : (
                                 <>
                                     <Shield className="w-4 h-4" />
-                                    LOGIN TO NETRIX
+                                    CREATE ACCOUNT
                                 </>
                             )}
                         </button>
                     </form>
 
                     <p className="text-center text-sm text-netrix-muted mt-5">
-                        Don't have an account?{' '}
+                        Already have an account?{' '}
                         <button
-                            onClick={() => navigate('/register')}
+                            onClick={() => navigate('/login')}
                             className="text-netrix-accent hover:text-cyan-300 transition-colors font-medium"
                         >
-                            Register
+                            Sign in
                         </button>
                     </p>
-
-
                 </div>
 
                 <p className="text-center text-netrix-muted/40 text-xs mt-6">

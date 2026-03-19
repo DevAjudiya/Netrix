@@ -89,23 +89,37 @@ def create_default_admin() -> bool:
     """
     Ensure that a default administrator account exists.
 
-    If the ``netrix_admin`` user is not found in the ``users`` table a
-    new record is inserted with:
+    Credentials are read exclusively from environment variables:
 
-    * **username**: ``netrix_admin``
-    * **email**: ``admin@netrix.local``
-    * **password**: ``Admin@Netrix123`` (bcrypt-hashed)
-    * **role**: ``admin``
+    * ``ADMIN_USERNAME``  — admin account username
+    * ``ADMIN_EMAIL``     — admin account email
+    * ``ADMIN_PASSWORD``  — admin account password (plain-text, hashed on write)
+
+    If any of these variables are not set, seeding is skipped and a
+    warning is logged so the operator knows they must create an admin
+    account manually.
 
     Returns:
-        bool: ``True`` if the admin was created, ``False`` if it already
-              existed.
+        bool: ``True`` if the admin was created, ``False`` otherwise.
     """
+    import os
+
+    admin_username = os.environ.get("ADMIN_USERNAME", "").strip()
+    admin_email = os.environ.get("ADMIN_EMAIL", "").strip()
+    admin_password = os.environ.get("ADMIN_PASSWORD", "").strip()
+
+    if not admin_username or not admin_email or not admin_password:
+        logger.warning(
+            "[NETRIX] Skipping default admin seed — "
+            "ADMIN_USERNAME, ADMIN_EMAIL, and ADMIN_PASSWORD must all be set."
+        )
+        return False
+
     db = SessionLocal()
     try:
         existing_admin = (
             db.query(User)
-            .filter(User.username == "netrix_admin")
+            .filter(User.username == admin_username)
             .first()
         )
 
@@ -117,9 +131,9 @@ def create_default_admin() -> bool:
             return False
 
         admin_user = User(
-            username="netrix_admin",
-            email="admin@netrix.local",
-            password_hash=get_password_hash("Admin@Netrix123"),
+            username=admin_username,
+            email=admin_email,
+            password_hash=get_password_hash(admin_password),
             role="admin",
             is_active=True,
         )
@@ -129,8 +143,8 @@ def create_default_admin() -> bool:
         db.refresh(admin_user)
 
         logger.info(
-            "[NETRIX] ✓ Default admin created — username: netrix_admin, "
-            "ID: %d",
+            "[NETRIX] ✓ Default admin created — username: %s, ID: %d",
+            admin_username,
             admin_user.id,
         )
         return True
@@ -159,7 +173,7 @@ def init_database() -> Dict[str, bool]:
     Initialise the database in two steps:
 
     1. Create all tables that do not yet exist.
-    2. Seed the default ``netrix_admin`` administrator account.
+    2. Seed the default administrator account (requires ADMIN_* env vars).
 
     This function is designed to be called once during application
     startup (e.g. inside the FastAPI lifespan handler).

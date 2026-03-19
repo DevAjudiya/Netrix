@@ -40,13 +40,13 @@ export default function Settings() {
                         <div>
                             <label className="block text-xs text-netrix-muted mb-1">Username</label>
                             <div className="px-3 py-2 rounded-lg bg-netrix-surface border border-netrix-border text-netrix-text text-sm">
-                                {user?.username || 'netrix_admin'}
+                                {user?.username || '—'}
                             </div>
                         </div>
                         <div>
                             <label className="block text-xs text-netrix-muted mb-1">Email</label>
                             <div className="px-3 py-2 rounded-lg bg-netrix-surface border border-netrix-border text-netrix-text text-sm">
-                                {user?.email || 'admin@netrix.local'}
+                                {user?.email || '—'}
                             </div>
                         </div>
                         <div>
