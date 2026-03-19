@@ -7,7 +7,9 @@ import json
 import logging
 import os
 import re
+import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -18,6 +20,53 @@ from app.config import get_settings
 from app.models.vulnerability import Vulnerability
 
 logger = logging.getLogger("netrix")
+
+
+# ─────────────────────────────────────────
+# NVD Rate Limiter (thread-safe, 45 req/30s)
+# ─────────────────────────────────────────
+class NVDRateLimiter:
+    """
+    Thread-safe sliding-window rate limiter for NVD API calls.
+
+    Enforces a maximum of ``max_requests`` requests within any
+    ``window``-second period.  Keeps a 5-request buffer below the
+    NVD limit of 50 req/30 s so concurrent threads never trigger a
+    429 response.
+    """
+
+    def __init__(self, max_requests: int = 45, window: float = 30.0) -> None:
+        self.max_requests = max_requests
+        self.window = window
+        self._lock = threading.Lock()
+        self._timestamps: deque = deque()
+
+    def acquire(self) -> None:
+        """Block the calling thread until a request slot is available."""
+        with self._lock:
+            now = time.time()
+            # Evict timestamps outside the current window
+            while self._timestamps and now - self._timestamps[0] >= self.window:
+                self._timestamps.popleft()
+
+            if len(self._timestamps) >= self.max_requests:
+                # Sleep until the oldest request expires, then re-evict
+                sleep_for = self.window - (now - self._timestamps[0]) + 0.1
+                logger.debug(
+                    "[NETRIX] NVD rate limiter sleeping %.1fs (%d/%d slots used)",
+                    sleep_for, len(self._timestamps), self.max_requests,
+                )
+                time.sleep(max(0.0, sleep_for))
+                now = time.time()
+                while self._timestamps and now - self._timestamps[0] >= self.window:
+                    self._timestamps.popleft()
+
+            self._timestamps.append(time.time())
+
+
+# Module-level singleton — shared across all threads and CVEEngine instances
+_nvd_limiter = NVDRateLimiter()
+
 
 # ─────────────────────────────────────────
 # Constants
@@ -100,7 +149,6 @@ class CVEEngine:
         if self.settings.NVD_API_KEY:
             self.session.headers["apiKey"] = self.settings.NVD_API_KEY
         self._offline_db: Dict[str, Dict] = {}
-        self._last_nvd_call: float = 0.0
         self.load_offline_database()
         logger.info("[NETRIX] CVE Engine initialized")
 
@@ -123,10 +171,8 @@ class CVEEngine:
     # NVD rate-limit helper
     # ─────────────────────────────────────
     def _rate_limit(self) -> None:
-        elapsed = time.time() - self._last_nvd_call
-        if elapsed < 0.6:
-            time.sleep(0.6 - elapsed)
-        self._last_nvd_call = time.time()
+        """Acquire a slot from the global NVD rate limiter before any API call."""
+        _nvd_limiter.acquire()
 
     # ─────────────────────────────────────
     # NVD: fetch single CVE

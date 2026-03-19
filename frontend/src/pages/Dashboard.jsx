@@ -17,6 +17,7 @@ import {
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import VulnBadge from '../components/VulnBadge'
+import { formatDateIST } from '../utils/formatDate'
 
 ChartJS.register(ArcElement, Tooltip, Legend)
 
@@ -44,8 +45,16 @@ export default function Dashboard() {
                     dashboardAPI.vulnChart()
                 ])
                 if (statsRes.status === 'fulfilled') dispatch(setStats(statsRes.value.data))
-                if (scansRes.status === 'fulfilled') dispatch(setRecentScans(scansRes.value.data))
-                if (chartRes.status === 'fulfilled') dispatch(setVulnChart(chartRes.value.data))
+                if (scansRes.status === 'fulfilled')
+                    dispatch(setRecentScans(scansRes.value.data?.recent_scans || []))
+                if (chartRes.status === 'fulfilled') {
+                    // API returns { data: [{label, value, color}, ...] }
+                    // Normalise to { critical, high, medium, low, info }
+                    const chartData = chartRes.value.data?.data || []
+                    const chartMap = {}
+                    chartData.forEach(d => { chartMap[d.label.toLowerCase()] = d.value })
+                    dispatch(setVulnChart(chartMap))
+                }
             } catch (err) {
                 setFetchError('Failed to load dashboard data')
             } finally {
@@ -55,12 +64,7 @@ export default function Dashboard() {
         fetchData()
     }, [dispatch])
 
-    const formatDate = (dateStr) => {
-        if (!dateStr) return '—'
-        return new Date(dateStr).toLocaleDateString('en-US', {
-            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-        })
-    }
+    const formatDate = formatDateIST
 
     const statusColor = (status) => {
         const map = {

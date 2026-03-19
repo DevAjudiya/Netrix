@@ -9,7 +9,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import AuthenticationException
+from app.core.exceptions import AuthenticationException, UserAlreadyExistsException
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -54,7 +54,7 @@ class AuthService:
         ).first()
 
         if existing_user:
-            raise AuthenticationException(
+            raise UserAlreadyExistsException(
                 message="Username or email already registered.",
                 details="Please choose a different username or email.",
             )

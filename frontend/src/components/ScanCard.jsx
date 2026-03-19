@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { Clock, Target, Wifi, AlertTriangle } from 'lucide-react'
 import VulnBadge from './VulnBadge'
+import { formatDateIST } from '../utils/formatDate'
 
 const statusConfig = {
     completed: { color: 'text-green-400', bg: 'bg-green-400/10', label: 'Completed' },
@@ -14,13 +15,7 @@ export default function ScanCard({ scan }) {
     const navigate = useNavigate()
     const status = statusConfig[scan.status] || statusConfig.pending
 
-    const formatDate = (dateStr) => {
-        if (!dateStr) return '—'
-        const d = new Date(dateStr)
-        return d.toLocaleDateString('en-US', {
-            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-        })
-    }
+    const formatDate = formatDateIST
 
     return (
         <div

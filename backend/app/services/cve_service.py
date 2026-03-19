@@ -4,12 +4,220 @@
 # ─────────────────────────────────────────
 
 import logging
+import re as _re
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+_CVE_RE = _re.compile(r'^CVE-\d{4}-\d+$', _re.IGNORECASE)
+
+from sqlalchemy.orm import Session
+
+from app.models.host import Host
 from app.models.vulnerability import Vulnerability
 from app.scanner.vuln_engine import CVEDetail, CVEEngine, VulnerabilityMatch
 
 logger = logging.getLogger("netrix")
+
+
+# ─────────────────────────────────────────
+# Module-level enrichment pipeline
+# ─────────────────────────────────────────
+def enrich_scan_vulnerabilities(scan_db_id: int, db: Session) -> Dict:
+    """
+    Enrich every vulnerability record for a completed scan.
+
+    For each vulnerability that is missing cvss_score, description,
+    or remediation:
+        1. Try the offline CVE database first (instant, no network).
+        2. Fall back to the NVD API (rate-limited by NVDRateLimiter).
+    After enriching CVEs, recalculate risk_score / risk_level for
+    every host in the scan based on its highest CVSS finding.
+
+    This function is synchronous and safe to call from worker threads
+    (scan_manager) as well as from the main FastAPI thread
+    (report_service).
+
+    Args:
+        scan_db_id: Database primary key of the Scan record.
+        db:         SQLAlchemy session to use for queries and updates.
+
+    Returns:
+        dict: Summary with counts of enriched / already_complete / failed.
+    """
+    engine = CVEEngine()
+    enriched = already_complete = failed = 0
+
+    try:
+        vulns = db.query(Vulnerability).filter(
+            Vulnerability.scan_id == scan_db_id
+        ).all()
+
+        if not vulns:
+            logger.info(
+                "[NETRIX] Enrichment: no vulnerabilities for scan %d", scan_db_id
+            )
+            return {"enriched": 0, "already_complete": 0, "failed": 0}
+
+        logger.info(
+            "[NETRIX] Enrichment: starting for scan %d (%d vulns)",
+            scan_db_id, len(vulns),
+        )
+
+        needs_enrichment = [
+            v for v in vulns
+            if v.cvss_score is None
+            or not v.description
+            or not v.remediation
+        ]
+
+        logger.info(
+            "[NETRIX] Enrichment: %d/%d vulns need enrichment",
+            len(needs_enrichment), len(vulns),
+        )
+        already_complete = len(vulns) - len(needs_enrichment)
+
+        severity_to_score = {
+            "critical": 9.5, "high": 7.5,
+            "medium": 5.0, "low": 2.0, "info": 0.0,
+        }
+
+        for vuln in needs_enrichment:
+            # NSE detections with no CVE ID, or NSE-placeholder IDs that aren't real CVEs
+            is_real_cve = vuln.cve_id and _CVE_RE.match(vuln.cve_id)
+            if not is_real_cve:
+                if vuln.cvss_score is None and vuln.severity:
+                    vuln.cvss_score = severity_to_score.get(vuln.severity, 5.0)
+                if not vuln.remediation:
+                    service_hint = (vuln.title or "").lower()
+                    vuln.remediation = engine.get_remediation("", service_hint) or \
+                        "Investigate the NSE script finding and apply vendor patches. Restrict network exposure."
+                enriched += 1
+                continue
+            try:
+                detail: Optional[CVEDetail] = None
+
+                # 1. Offline DB (no network, instant)
+                if vuln.cve_id in engine._offline_db:
+                    detail = engine._offline_to_cve_detail(
+                        vuln.cve_id, engine._offline_db[vuln.cve_id]
+                    )
+
+                # 2. NVD API fallback (rate-limited)
+                if detail is None:
+                    detail = engine.fetch_cve_from_nvd(vuln.cve_id)
+
+                if detail is None:
+                    # Severity-based fallback when NVD and offline DB both have no data
+                    if vuln.cvss_score is None and vuln.severity:
+                        vuln.cvss_score = severity_to_score.get(vuln.severity, 5.0)
+                    failed += 1
+                    logger.debug(
+                        "[NETRIX] Enrichment: no data found for %s, used severity fallback", vuln.cve_id
+                    )
+                    continue
+
+                # Apply enrichment only for missing fields
+                if vuln.cvss_score is None and detail.cvss_score:
+                    vuln.cvss_score = detail.cvss_score
+                if not vuln.cvss_vector and detail.cvss_vector:
+                    vuln.cvss_vector = detail.cvss_vector
+                if not vuln.description and detail.description:
+                    vuln.description = detail.description
+                if not vuln.remediation and detail.remediation:
+                    vuln.remediation = detail.remediation
+                if not vuln.title or vuln.title == vuln.cve_id:
+                    if detail.title:
+                        vuln.title = detail.title[:255]
+                if detail.published_date and not vuln.published_date:
+                    try:
+                        vuln.published_date = datetime.strptime(
+                            detail.published_date[:10], "%Y-%m-%d"
+                        ).date()
+                    except (ValueError, TypeError):
+                        pass
+                # Recalculate severity from CVSS score if it was null
+                if vuln.cvss_score is not None:
+                    vuln.severity = engine._score_to_severity(float(vuln.cvss_score))
+                if detail.source in ("nvd_api", "offline_db", "nse_script"):
+                    vuln.source = detail.source
+
+                enriched += 1
+                logger.info(
+                    "[NETRIX] Enrichment: %s → cvss=%.1f severity=%s",
+                    vuln.cve_id,
+                    float(vuln.cvss_score) if vuln.cvss_score else 0.0,
+                    vuln.severity,
+                )
+
+            except Exception as vuln_err:
+                failed += 1
+                logger.warning(
+                    "[NETRIX] Enrichment: failed for %s: %s",
+                    vuln.cve_id, str(vuln_err),
+                )
+
+        # Commit all CVE enrichments at once
+        try:
+            db.commit()
+        except Exception as commit_err:
+            db.rollback()
+            logger.error("[NETRIX] Enrichment commit failed: %s", commit_err)
+            return {"enriched": 0, "already_complete": already_complete, "failed": failed}
+
+        # ── Update host risk scores ───────────────────────────────
+        _update_host_risk_scores(scan_db_id, db, engine)
+
+        logger.info(
+            "[NETRIX] Enrichment complete for scan %d: "
+            "enriched=%d already_complete=%d failed=%d",
+            scan_db_id, enriched, already_complete, failed,
+        )
+
+    except Exception as exc:
+        logger.error(
+            "[NETRIX] Enrichment pipeline error for scan %d: %s",
+            scan_db_id, str(exc),
+        )
+
+    return {"enriched": enriched, "already_complete": already_complete, "failed": failed}
+
+
+def _update_host_risk_scores(scan_db_id: int, db: Session, engine: CVEEngine) -> None:
+    """
+    Recalculate risk_score and risk_level for every host in the scan
+    based on the maximum CVSS score across all its vulnerabilities.
+    """
+    try:
+        hosts = db.query(Host).filter(Host.scan_id == scan_db_id).all()
+        for host in hosts:
+            host_vulns = db.query(Vulnerability).filter(
+                Vulnerability.host_id == host.id
+            ).all()
+            if not host_vulns:
+                continue
+            scores = [
+                float(v.cvss_score)
+                for v in host_vulns
+                if v.cvss_score is not None
+            ]
+            if not scores:
+                continue
+            max_score = max(scores)
+            # risk_score: scale CVSS (0–10) to integer (0–100)
+            host.risk_score = min(100, int(max_score * 10))
+            host.risk_level = engine._score_to_severity(max_score)
+
+        db.commit()
+        logger.info(
+            "[NETRIX] Risk scores updated for %d hosts in scan %d",
+            len(hosts), scan_db_id,
+        )
+    except Exception as exc:
+        db.rollback()
+        logger.warning(
+            "[NETRIX] Risk score update failed for scan %d: %s",
+            scan_db_id, str(exc),
+        )
 
 
 class CVEService:
@@ -108,7 +316,17 @@ class CVEService:
             Optional[CVEDetail]: The CVE detail record, or None.
         """
         try:
-            # 1. Check database
+            # 1. Check offline database (authoritative, curated data)
+            if cve_id in self.engine._offline_db:
+                data = self.engine._offline_db[cve_id]
+                return self.engine._offline_to_cve_detail(cve_id, data)
+
+            # 2. Fetch from NVD API
+            nvd_detail = self.engine.fetch_cve_from_nvd(cve_id)
+            if nvd_detail:
+                return nvd_detail
+
+            # 3. Fall back to database record (may have sparse NSE data)
             db_vuln = (
                 self.db_session.query(Vulnerability)
                 .filter(Vulnerability.cve_id == cve_id)
@@ -128,14 +346,6 @@ class CVEService:
                     source=db_vuln.source or "offline_db",
                     affected_products=[],
                 )
-
-            # 2. Check offline database
-            if cve_id in self.engine._offline_db:
-                data = self.engine._offline_db[cve_id]
-                return self.engine._offline_to_cve_detail(cve_id, data)
-
-            # 3. Fetch from NVD API
-            return self.engine.fetch_cve_from_nvd(cve_id)
 
         except Exception as exc:
             logger.error("[NETRIX] Failed to get CVE details for %s: %s", cve_id, exc)

@@ -7,6 +7,7 @@ import ScanResults from './pages/ScanResults'
 import Vulnerabilities from './pages/Vulnerabilities'
 import Reports from './pages/Reports'
 import History from './pages/History'
+import Settings from './pages/Settings'
 
 function App() {
     return (
@@ -31,6 +32,9 @@ function App() {
                 } />
                 <Route path="/history" element={
                     <ProtectedRoute><History /></ProtectedRoute>
+                } />
+                <Route path="/settings" element={
+                    <ProtectedRoute><Settings /></ProtectedRoute>
                 } />
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>

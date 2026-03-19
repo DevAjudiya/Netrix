@@ -9,7 +9,7 @@ import math
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from app.core.exceptions import ScanNotFoundException
@@ -74,7 +74,11 @@ async def list_vulnerabilities(
 
     total = query.count()
     vulns = (
-        query.order_by(Vulnerability.cvss_score.desc())
+        query.options(
+            joinedload(Vulnerability.host),
+            joinedload(Vulnerability.port),
+        )
+        .order_by(Vulnerability.cvss_score.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()

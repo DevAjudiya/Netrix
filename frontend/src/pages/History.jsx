@@ -9,6 +9,7 @@ import {
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import VulnBadge from '../components/VulnBadge'
+import { formatDateIST } from '../utils/formatDate'
 
 export default function History() {
     const navigate = useNavigate()
@@ -72,13 +73,7 @@ export default function History() {
         })
     }
 
-    const formatDate = (dateStr) => {
-        if (!dateStr) return '—'
-        return new Date(dateStr).toLocaleDateString('en-US', {
-            month: 'short', day: 'numeric', year: 'numeric',
-            hour: '2-digit', minute: '2-digit'
-        })
-    }
+    const formatDate = formatDateIST
 
     const statusColor = (status) => {
         const m = {

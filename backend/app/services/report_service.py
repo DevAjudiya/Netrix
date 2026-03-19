@@ -20,6 +20,7 @@ from app.models.report import Report
 from app.models.scan import Scan
 from app.models.vulnerability import Vulnerability
 from app.scanner.report_engine import ReportData, ReportEngine
+from app.scanner.vuln_engine import CVEEngine
 
 logger = logging.getLogger("netrix")
 
@@ -42,6 +43,7 @@ class ReportService:
         self.db = db
         self.settings = get_settings()
         self.engine = ReportEngine()
+        self._cve_engine = CVEEngine()
 
     # ─────────────────────────────────────
     # Main pipeline
@@ -93,11 +95,29 @@ class ReportService:
                 details=f"Scan {scan.scan_id} is currently '{scan.status}'.",
             )
 
-        # 2. Collect data
+        # 2. Enrich any CVEs that are still missing CVSS/description/remediation
+        try:
+            from app.services.cve_service import enrich_scan_vulnerabilities
+            enrich_result = enrich_scan_vulnerabilities(
+                scan_db_id=scan.id,
+                db=self.db,
+            )
+            if enrich_result.get("enriched", 0) > 0:
+                logger.info(
+                    "[NETRIX] Pre-report enrichment for scan %s: %s",
+                    scan.scan_id, enrich_result,
+                )
+        except Exception as enrich_err:
+            logger.warning(
+                "[NETRIX] Pre-report enrichment failed (non-fatal): %s",
+                str(enrich_err),
+            )
+
+        # 3. Collect data
         scan_data = self._collect_scan_data(scan)
         vuln_data = self._collect_vulnerability_data(scan)
 
-        # 3. Prepare ReportData
+        # 4. Prepare ReportData
         report_data = self.engine.prepare_report_data(
             scan_summary=scan_data,
             vulnerability_matches=vuln_data,
@@ -381,6 +401,17 @@ class ReportService:
                     port_num = port.port_number
                     service_name = port.service_name or "N/A"
 
+            # Enrich remediation from offline DB when not stored
+            remediation = v.remediation
+            if not remediation and v.cve_id:
+                offline = self._cve_engine._offline_db.get(v.cve_id)
+                if offline:
+                    remediation = offline.get("remediation", "")
+            if not remediation and v.cve_id:
+                remediation = self._cve_engine.get_remediation(
+                    v.cve_id, service_name
+                )
+
             vuln_data.append({
                 "cve_id": v.cve_id,
                 "cvss_score": float(v.cvss_score) if v.cvss_score is not None else None,
@@ -388,7 +419,7 @@ class ReportService:
                 "severity": v.severity,
                 "title": v.title,
                 "description": v.description,
-                "remediation": v.remediation,
+                "remediation": remediation,
                 "source": v.source,
                 "is_confirmed": v.is_confirmed,
                 "affected_host": host_ip,

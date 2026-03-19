@@ -25,6 +25,7 @@ services:
     environment:
       - MYSQL_HOST=mysql
       - REDIS_URL=redis://redis:6379
+      - TZ=Asia/Kolkata
     volumes:
       - reports_data:/app/reports
       - ./backend:/app
@@ -55,7 +56,14 @@ services:
       - netrix-backend
     environment:
       - REACT_APP_API_URL=http://localhost:8000/api/v1
+      - TZ=Asia/Kolkata
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     networks:
       - netrix-network
 

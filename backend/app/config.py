@@ -31,9 +31,9 @@ class Settings(BaseSettings):
 
     # ── Security & Authentication ───────────────────────────────────────
     # Secret key used to sign JWT tokens — must be a strong random string
-    SECRET_KEY: str
+    JWT_SECRET_KEY: str
     # Cryptographic algorithm used for JWT signing (HS256, HS384, HS512)
-    ALGORITHM: str = "HS256"
+    JWT_ALGORITHM: str = "HS256"
     # Lifetime of short-lived access tokens in minutes
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     # Lifetime of refresh tokens in days (used to obtain new access tokens)

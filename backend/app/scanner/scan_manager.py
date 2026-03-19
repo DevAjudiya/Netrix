@@ -467,11 +467,29 @@ class ScanManager:
             )
 
             # ── Persist to DB ────────────────────────────────────
-            self.engine.save_to_database(
+            scan_db_id = self.engine.save_to_database(
                 summary=summary,
                 db_session=db,
                 user_id=user_id,
             )
+
+            # ── Enrich CVE data post-save ─────────────────────────
+            if scan_db_id:
+                try:
+                    from app.services.cve_service import enrich_scan_vulnerabilities
+                    enrich_result = enrich_scan_vulnerabilities(
+                        scan_db_id=scan_db_id,
+                        db=db,
+                    )
+                    logger.info(
+                        "[NETRIX] Post-scan enrichment for scan %d: %s",
+                        scan_db_id, enrich_result,
+                    )
+                except Exception as enrich_err:
+                    logger.warning(
+                        "[NETRIX] Post-scan enrichment failed (non-fatal): %s",
+                        str(enrich_err),
+                    )
 
             # Push scan_complete event
             duration_secs = summary.duration_seconds

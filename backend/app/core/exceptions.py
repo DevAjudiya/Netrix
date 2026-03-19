@@ -195,6 +195,25 @@ class InsufficientPermissionsException(NetrixBaseException):
         )
 
 
+class UserAlreadyExistsException(NetrixBaseException):
+    """
+    Raised when a registration attempt uses a username or email that is
+    already taken by an existing account.
+    """
+
+    def __init__(
+        self,
+        message: str = "Username or email already registered.",
+        details: Optional[str] = None,
+    ) -> None:
+        super().__init__(
+            message=message,
+            status_code=409,
+            error_code="USER_ALREADY_EXISTS",
+            details=details,
+        )
+
+
 class AuthenticationException(NetrixBaseException):
     """
     Raised when authentication fails.

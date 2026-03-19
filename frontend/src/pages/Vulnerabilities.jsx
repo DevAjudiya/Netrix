@@ -169,7 +169,7 @@ export default function Vulnerabilities() {
                                         >
                                             <td>
                                                 <span className="font-mono text-sm font-medium text-netrix-accent">
-                                                    {vuln.cve_id || '—'}
+                                                    {vuln.cve_id || vuln.nse_script_name || '—'}
                                                 </span>
                                             </td>
                                             <td><VulnBadge severity={vuln.severity} /></td>
@@ -218,7 +218,7 @@ export default function Vulnerabilities() {
                             <div className="flex items-start justify-between mb-4">
                                 <div>
                                     <h3 className="text-lg font-bold text-netrix-text font-mono">
-                                        {selectedVuln.cve_id || 'Vulnerability Details'}
+                                        {selectedVuln.cve_id || selectedVuln.nse_script_name || 'Vulnerability Details'}
                                     </h3>
                                     <VulnBadge severity={selectedVuln.severity} size="md" />
                                 </div>

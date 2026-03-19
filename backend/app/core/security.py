@@ -71,8 +71,8 @@ def create_access_token(
 
     encoded_jwt = jwt.encode(
         to_encode,
-        settings.SECRET_KEY,
-        algorithm=settings.ALGORITHM,
+        settings.JWT_SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM,
     )
     return encoded_jwt
 
@@ -107,8 +107,8 @@ def create_refresh_token(data: Dict[str, Any]) -> str:
 
     encoded_jwt = jwt.encode(
         to_encode,
-        settings.SECRET_KEY,
-        algorithm=settings.ALGORITHM,
+        settings.JWT_SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM,
     )
     return encoded_jwt
 
@@ -135,8 +135,8 @@ def verify_token(token: str) -> Dict[str, Any]:
     try:
         payload = jwt.decode(
             token,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM],
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
         )
     except JWTError as decode_error:
         raise AuthenticationException(
@@ -174,8 +174,8 @@ def verify_token_websocket(token: str) -> Optional[Dict[str, Any]]:
     try:
         payload = jwt.decode(
             token,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM],
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
         )
         # Ensure the token contains required claims
         if "user_id" not in payload:

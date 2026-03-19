@@ -100,7 +100,7 @@ export default function NewScan() {
 
     // Add line to terminal
     const addTerminalLine = useCallback((message, event = 'info') => {
-        const time = new Date().toLocaleTimeString('en-US', { hour12: false })
+        const time = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
         const id = ++lineIdRef.current
         setTerminalLines(prev => {
             const newLines = [...prev, { id, time, message, event }]

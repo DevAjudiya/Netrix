@@ -9,12 +9,17 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
 from app.database.session import get_db
 from app.schemas.user import Token, UserCreate, UserLogin, UserResponse
 from app.services.auth_service import AuthService
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
 logger = logging.getLogger("netrix")
 
@@ -103,13 +108,14 @@ async def register(
     summary="Refresh access token",
 )
 async def refresh_token(
-    refresh_token_str: str,
+    body: RefreshRequest,
     db: Session = Depends(get_db),
 ):
     """
     Exchange a valid refresh token for a new access token.
 
-    Send the refresh token string in the request body.
+    Send the refresh token string in the request body as JSON:
+    ``{"refresh_token": "<token>"}``
 
     Returns:
         Token: New access token with refreshed expiration.
@@ -118,11 +124,11 @@ async def refresh_token(
         AuthenticationException: If the refresh token is invalid or expired.
     """
     auth_service = AuthService(db)
-    result = auth_service.refresh_access_token(refresh_token_str)
+    result = auth_service.refresh_access_token(body.refresh_token)
 
     return Token(
         access_token=result["access_token"],
-        refresh_token=refresh_token_str,
+        refresh_token=body.refresh_token,
         token_type=result["token_type"],
         expires_in=15 * 60,
     )

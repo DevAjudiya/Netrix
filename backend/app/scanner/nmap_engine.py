@@ -44,7 +44,7 @@ CRITICAL_PORTS: List[int] = [
 
 SCAN_PROFILES = {
     "quick": {
-        "args": "-sT -sV -Pn -T4 -F --open",
+        "args": "-sT -sV -O -Pn -T4 -F --open",
         "time": "1-3 min"
     },
     "stealth": {
@@ -52,11 +52,11 @@ SCAN_PROFILES = {
         "time": "5-10 min"
     },
     "full": {
-        "args": "-sT -sV -Pn -T4 --open -p 1-65535",
+        "args": "-sT -sV -O -Pn -T4 --open -p 1-65535",
         "time": "15-30 min"
     },
     "aggressive": {
-        "args": "-sT -sV -sC -Pn -T4 --open -p 1-10000",
+        "args": "-sT -sV -sC -O -Pn -T4 --open -p 1-10000",
         "time": "10-20 min"
     },
     "vulnerability": {
@@ -493,9 +493,22 @@ class NmapEngine:
         # ── Basic identity ───────────────────────────────────────
         hostname = ""
         try:
-            hostname = host_data.hostname()
+            # Prefer iterating the hostnames list directly — hostname() may
+            # return "" even when entries exist (e.g. type != 'PTR')
+            raw_hostnames = host_data.get("hostnames", [])
+            for h in raw_hostnames:
+                name = h.get("name", "").strip()
+                if name:
+                    hostname = name
+                    break
         except Exception:
             pass
+
+        if not hostname:
+            try:
+                hostname = host_data.hostname() or ""
+            except Exception:
+                pass
 
         status = "unknown"
         try:
@@ -935,6 +948,7 @@ class NmapEngine:
 
             scan.status = "running"
             scan.started_at = datetime.fromisoformat(summary.started_at)
+            scan.nmap_version = summary.nmap_version
             db_session.flush()
 
             logger.info(
@@ -993,13 +1007,44 @@ class NmapEngine:
                     # ── Step 4: Vulnerability records ────────────
                     for script_name, script_output in svc.nse_scripts.items():
                         if self._is_vulnerable_output(script_output):
+                            cve_id, cvss_score = self._extract_cve_from_output(
+                                script_output
+                            )
+                            # Enrich CVSS from offline DB when not in NSE output
+                            if cve_id and cvss_score is None:
+                                try:
+                                    from app.scanner.vuln_engine import CVEEngine as _CVEEngine
+                                    _engine = _CVEEngine()
+                                    if cve_id in _engine._offline_db:
+                                        _offline_score = _engine._offline_db[cve_id].get("cvss_score")
+                                        if _offline_score is not None:
+                                            cvss_score = float(_offline_score)
+                                except Exception:
+                                    pass
+                            severity = self._severity_from_script(script_name)
+                            # Override severity from CVSS score when available
+                            if cvss_score is not None:
+                                if cvss_score >= 9.0:
+                                    severity = "critical"
+                                elif cvss_score >= 7.0:
+                                    severity = "high"
+                                elif cvss_score >= 4.0:
+                                    severity = "medium"
+                                else:
+                                    severity = "low"
+                            # Leave cve_id as None when no CVE ID extracted from output
+                            # (cve_id column is String(20); nse_script_name stores the script name)
+                            if not cve_id:
+                                cve_id = None
                             vuln = Vulnerability(
                                 port_id=port.id,
                                 scan_id=scan.id,
                                 host_id=host.id,
+                                cve_id=cve_id,
+                                cvss_score=cvss_score,
                                 title=f"NSE: {script_name}",
                                 description=script_output[:2000],
-                                severity=self._severity_from_script(script_name),
+                                severity=severity,
                                 source="nse_script",
                                 nse_script_name=script_name,
                                 nse_output=script_output,
@@ -1055,6 +1100,41 @@ class NmapEngine:
         if len(parts) == 4 and all(p.isdigit() for p in parts):
             return "ip"
         return "domain"
+
+    @staticmethod
+    def _extract_cve_from_output(output: str):
+        """
+        Extract the first CVE ID and its CVSS score from NSE script output.
+
+        Handles two common formats produced by the ``vulners`` and
+        ``vuln``-category scripts:
+          - ``CVE-2011-2523 10.0``   (vulners style)
+          - ``IDs: CVE:CVE-2011-2523``  (vuln-category style)
+
+        Returns:
+            tuple[str|None, float|None]: (cve_id, cvss_score)
+        """
+        import re as _re
+        if not output:
+            return None, None
+
+        # Try "CVE-XXXX-XXXXXX <score>" (vulners script format)
+        scored = _re.search(r'(CVE-\d{4}-\d{4,7})\s+(\d+(?:\.\d+)?)', output)
+        if scored:
+            cve_id = scored.group(1)
+            try:
+                score = float(scored.group(2))
+                cvss_score = score if 0.0 <= score <= 10.0 else None
+            except ValueError:
+                cvss_score = None
+            return cve_id, cvss_score
+
+        # Try "CVE:CVE-XXXX-XXXXXX" (vuln-category script format)
+        prefixed = _re.search(r'CVE:(CVE-\d{4}-\d{4,7})', output)
+        if prefixed:
+            return prefixed.group(1), None
+
+        return None, None
 
     @staticmethod
     def _severity_from_script(script_name: str) -> str:

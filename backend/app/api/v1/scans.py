@@ -429,6 +429,70 @@ async def get_scan_results(
 
 
 # ─────────────────────────────────────────
+# GET /scans/{scan_id}/hosts — Hosts for a scan
+# ─────────────────────────────────────────
+@router.get("/{scan_id}/hosts")
+async def get_scan_hosts(
+    scan_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get all hosts discovered in a scan, with their ports."""
+    scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+    if not scan and scan_id.isdigit():
+        scan = db.query(Scan).filter(Scan.id == int(scan_id)).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
+
+    hosts = db.query(Host).filter(Host.scan_id == scan.id).all()
+    hosts_data = []
+    for host in hosts:
+        ports = db.query(Port).filter(Port.host_id == host.id).all()
+        h = host.to_dict()
+        h["ports"] = [p.to_dict() for p in ports]
+        hosts_data.append(h)
+
+    return {
+        "scan_id": scan.scan_id,
+        "total_hosts": len(hosts_data),
+        "hosts": hosts_data,
+    }
+
+
+# ─────────────────────────────────────────
+# GET /scans/{scan_id}/vulns — Vulns for a scan
+# ─────────────────────────────────────────
+@router.get("/{scan_id}/vulns")
+async def get_scan_vulns(
+    scan_id: str,
+    severity: Optional[str] = Query(None, description="Filter by severity"),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get all vulnerabilities discovered in a scan."""
+    scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+    if not scan and scan_id.isdigit():
+        scan = db.query(Scan).filter(Scan.id == int(scan_id)).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
+
+    query = db.query(Vulnerability).filter(Vulnerability.scan_id == scan.id)
+    if severity:
+        query = query.filter(Vulnerability.severity == severity.lower())
+
+    vulns = query.order_by(
+        Vulnerability.cvss_score.is_(None),
+        Vulnerability.cvss_score.desc(),
+    ).all()
+
+    return {
+        "scan_id": scan.scan_id,
+        "total_vulnerabilities": len(vulns),
+        "vulnerabilities": [v.to_dict() for v in vulns],
+    }
+
+
+# ─────────────────────────────────────────
 # DELETE /scans/{scan_id} — Delete a scan
 # ─────────────────────────────────────────
 @router.delete(

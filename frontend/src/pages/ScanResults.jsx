@@ -150,8 +150,10 @@ export default function ScanResults() {
     }
 
     const hosts = results?.hosts || results?.results?.hosts || []
-    const vulns = results?.vulnerabilities || results?.results?.vulnerabilities || []
-    const ports = results?.ports || results?.results?.ports || []
+    const vulns = hosts.flatMap(h => h.vulnerabilities || [])
+    const ports = hosts.flatMap(h =>
+        (h.ports || []).map(p => ({ ...p, host_ip: h.ip_address }))
+    )
 
     return (
         <Layout>
@@ -249,7 +251,7 @@ export default function ScanResults() {
                                                     <td>
                                                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-netrix-accent/10 text-netrix-accent text-xs font-medium">
                                                             <Wifi className="w-3 h-3" />
-                                                            {host.open_ports ?? host.port_count ?? '—'}
+                                                            {host.open_ports ?? host.port_count ?? host.ports?.length ?? '—'}
                                                         </span>
                                                     </td>
                                                     <td>

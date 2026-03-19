@@ -1,0 +1,318 @@
+{
+  "CVE-2021-44228": {
+    "title": "Log4Shell \u2014 Apache Log4j Remote Code Execution",
+    "description": "Apache Log4j2 2.0-beta9 through 2.15.0 JNDI features do not protect against attacker-controlled LDAP and other JNDI related endpoints, allowing remote code execution.",
+    "cvss_score": 10.0,
+    "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H",
+    "severity": "critical",
+    "published_date": "2021-12-10",
+    "affected": [
+      "log4j 2.0-beta9 through 2.14.1"
+    ],
+    "remediation": "Update to Apache Log4j 2.17.1 or later. Remove JndiLookup class from classpath.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2021-44228"
+    ]
+  },
+  "CVE-2021-34527": {
+    "title": "PrintNightmare \u2014 Windows Print Spooler RCE",
+    "description": "Windows Print Spooler service improperly performs privileged file operations, allowing remote code execution with SYSTEM privileges.",
+    "cvss_score": 8.8,
+    "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+    "severity": "high",
+    "published_date": "2021-07-02",
+    "affected": [
+      "windows print spooler"
+    ],
+    "remediation": "Apply Microsoft security update KB5004945. Disable Print Spooler service if not needed.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2021-34527"
+    ]
+  },
+  "CVE-2017-0144": {
+    "title": "EternalBlue \u2014 SMB Remote Code Execution",
+    "description": "The SMBv1 server in Microsoft Windows allows remote attackers to execute arbitrary code via crafted packets (EternalBlue).",
+    "cvss_score": 9.3,
+    "cvss_vector": "AV:N/AC:M/Au:N/C:C/I:C/A:C",
+    "severity": "critical",
+    "published_date": "2017-03-17",
+    "affected": [
+      "smb",
+      "windows smb"
+    ],
+    "remediation": "Apply Microsoft MS17-010 patch. Disable SMBv1 protocol.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2017-0144"
+    ]
+  },
+  "CVE-2019-0708": {
+    "title": "BlueKeep \u2014 RDP Remote Code Execution",
+    "description": "A remote code execution vulnerability exists in Remote Desktop Services when an unauthenticated attacker sends specially crafted requests (BlueKeep).",
+    "cvss_score": 9.8,
+    "cvss_vector": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "severity": "critical",
+    "published_date": "2019-05-14",
+    "affected": [
+      "rdp",
+      "remote desktop"
+    ],
+    "remediation": "Apply Microsoft security update. Enable Network Level Authentication. Disable RDP if not needed.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2019-0708"
+    ]
+  },
+  "CVE-2014-0160": {
+    "title": "Heartbleed \u2014 OpenSSL Information Disclosure",
+    "description": "The TLS heartbeat extension in OpenSSL 1.0.1 through 1.0.1f allows remote attackers to read sensitive memory (Heartbleed).",
+    "cvss_score": 7.5,
+    "cvss_vector": "AV:N/AC:L/Au:N/C:P/I:N/A:N",
+    "severity": "high",
+    "published_date": "2014-04-07",
+    "affected": [
+      "openssl 1.0.1"
+    ],
+    "remediation": "Update OpenSSL to 1.0.1g or later. Revoke and reissue all SSL certificates.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2014-0160"
+    ]
+  },
+  "CVE-2021-41773": {
+    "title": "Apache HTTP Server 2.4.49 Path Traversal",
+    "description": "A path traversal and file disclosure vulnerability in Apache HTTP Server 2.4.49 allows attackers to map URLs to files outside the expected document root.",
+    "cvss_score": 7.5,
+    "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+    "severity": "high",
+    "published_date": "2021-10-05",
+    "affected": [
+      "apache 2.4.49"
+    ],
+    "remediation": "Update Apache HTTP Server to 2.4.51 or later.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2021-41773"
+    ]
+  },
+  "CVE-2017-5638": {
+    "title": "Apache Struts 2 Remote Code Execution",
+    "description": "Apache Struts 2.3.x before 2.3.32 and 2.5.x before 2.5.10.1 allows remote code execution via a crafted Content-Type header.",
+    "cvss_score": 10.0,
+    "cvss_vector": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H",
+    "severity": "critical",
+    "published_date": "2017-03-11",
+    "affected": [
+      "apache struts 2.3",
+      "apache struts 2.5"
+    ],
+    "remediation": "Update Apache Struts to 2.3.32 or 2.5.10.1 or later.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2017-5638"
+    ]
+  },
+  "CVE-2018-11776": {
+    "title": "Apache Struts 2 Namespace RCE",
+    "description": "Apache Struts versions 2.3 to 2.3.34 and 2.5 to 2.5.16 allow remote code execution when namespace value is not set for results with no namespace.",
+    "cvss_score": 8.1,
+    "cvss_vector": "CVSS:3.0/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "severity": "high",
+    "published_date": "2018-08-22",
+    "affected": [
+      "apache struts 2.3",
+      "apache struts 2.5"
+    ],
+    "remediation": "Update Apache Struts to 2.3.35 or 2.5.17 or later.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2018-11776"
+    ]
+  },
+  "CVE-2011-2523": {
+    "title": "VSFTPD 2.3.4 Backdoor Command Execution",
+    "description": "vsftpd 2.3.4 contains a backdoor that opens a shell on port 6200 when a username containing :) is used.",
+    "cvss_score": 10.0,
+    "cvss_vector": "AV:N/AC:L/Au:N/C:C/I:C/A:C",
+    "severity": "critical",
+    "published_date": "2011-07-04",
+    "affected": [
+      "vsftpd 2.3.4"
+    ],
+    "remediation": "Remove compromised vsftpd 2.3.4. Install a clean version from official source.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2011-2523"
+    ]
+  },
+  "CVE-2017-7494": {
+    "title": "SambaCry \u2014 Samba Remote Code Execution",
+    "description": "Samba 3.5.0 onwards is vulnerable to remote code execution by a malicious client uploading a shared library to a writable share.",
+    "cvss_score": 9.8,
+    "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "severity": "critical",
+    "published_date": "2017-05-24",
+    "affected": [
+      "samba 3.5",
+      "samba 4"
+    ],
+    "remediation": "Update Samba to 4.6.4, 4.5.10, or 4.4.14 or later. Add 'nt pipe support = no' to smb.conf.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2017-7494"
+    ]
+  },
+  "CVE-2016-6210": {
+    "title": "OpenSSH User Enumeration",
+    "description": "OpenSSH before 7.3 is vulnerable to user enumeration via timing differences in authentication responses.",
+    "cvss_score": 7.0,
+    "cvss_vector": "CVSS:3.0/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N",
+    "severity": "high",
+    "published_date": "2016-08-07",
+    "affected": [
+      "openssh 7.2",
+      "openssh 7.0"
+    ],
+    "remediation": "Update OpenSSH to 7.3 or later.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2016-6210"
+    ]
+  },
+  "CVE-2020-10188": {
+    "title": "Telnet Remote Code Execution",
+    "description": "Telnetd in netkit telnet through 0.17 allows remote attackers to execute arbitrary code via short writes or urgent data.",
+    "cvss_score": 9.8,
+    "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "severity": "critical",
+    "published_date": "2020-03-06",
+    "affected": [
+      "telnet"
+    ],
+    "remediation": "Disable telnet service. Use SSH for remote administration instead.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2020-10188"
+    ]
+  },
+  "CVE-2014-6271": {
+    "title": "Shellshock \u2014 GNU Bash Remote Code Execution",
+    "description": "GNU Bash through 4.3 processes trailing strings after function definitions in environment variables, allowing remote code execution.",
+    "cvss_score": 10.0,
+    "cvss_vector": "AV:N/AC:L/Au:N/C:C/I:C/A:C",
+    "severity": "critical",
+    "published_date": "2014-09-24",
+    "affected": [
+      "bash 4.3",
+      "bash 4.2",
+      "bash 4.1"
+    ],
+    "remediation": "Update GNU Bash to 4.3 patch 25 or later.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2014-6271"
+    ]
+  },
+  "CVE-2016-6662": {
+    "title": "MySQL Remote Code Execution",
+    "description": "Oracle MySQL before 5.5.52, 5.6.x before 5.6.33, and 5.7.x before 5.7.15 allows remote code execution via manipulated config files.",
+    "cvss_score": 9.0,
+    "cvss_vector": "CVSS:3.0/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:H/A:H",
+    "severity": "critical",
+    "published_date": "2016-09-20",
+    "affected": [
+      "mysql 5.5",
+      "mysql 5.6",
+      "mysql 5.7"
+    ],
+    "remediation": "Update MySQL to 5.5.52, 5.6.33, 5.7.15 or later. Restrict FILE privilege.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2016-6662"
+    ]
+  },
+  "CVE-2017-12617": {
+    "title": "Apache Tomcat Remote Code Execution via PUT",
+    "description": "Apache Tomcat 7.0.0 to 7.0.79 and 8.0.0-RC1 to 8.0.44 allows remote code execution via a crafted PUT request with a JSP file.",
+    "cvss_score": 8.1,
+    "cvss_vector": "CVSS:3.0/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "severity": "high",
+    "published_date": "2017-10-04",
+    "affected": [
+      "tomcat 7.0",
+      "tomcat 8.0"
+    ],
+    "remediation": "Update Apache Tomcat to 7.0.82 or 8.0.47 or later. Disable PUT method.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2017-12617"
+    ]
+  },
+  "CVE-2014-3566": {
+    "title": "POODLE \u2014 SSLv3 Padding Oracle Attack",
+    "description": "The SSL protocol 3.0, as used in OpenSSL and other products, uses nondeterministic CBC padding which makes it easier for man-in-the-middle attackers to obtain cleartext data via a padding-oracle attack (POODLE).",
+    "cvss_score": 3.4,
+    "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:L/I:N/A:N",
+    "severity": "low",
+    "published_date": "2014-10-14",
+    "affected": [
+      "openssl",
+      "ssl 3.0"
+    ],
+    "remediation": "Disable SSLv3 on all servers and clients. Use TLS 1.2 or higher. Enable TLS_FALLBACK_SCSV.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2014-3566"
+    ]
+  },
+  "CVE-2015-4000": {
+    "title": "Logjam \u2014 TLS DHE Export Downgrade",
+    "description": "The TLS protocol could allow a man-in-the-middle attacker to downgrade vulnerable TLS connections using DHE_EXPORT ciphers to 512-bit export-grade cryptography (Logjam attack).",
+    "cvss_score": 3.7,
+    "cvss_vector": "CVSS:3.0/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N",
+    "severity": "low",
+    "published_date": "2015-05-20",
+    "affected": [
+      "openssl",
+      "tls"
+    ],
+    "remediation": "Disable DHE_EXPORT cipher suites. Use 2048-bit or larger DH groups. Upgrade to TLS 1.2+.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2015-4000"
+    ]
+  },
+  "CVE-2007-6750": {
+    "title": "Slowloris \u2014 HTTP Denial of Service",
+    "description": "Apache httpd allows remote attackers to cause a denial of service via incomplete HTTP requests, keeping connections open and exhausting the server's connection pool (Slowloris).",
+    "cvss_score": 5.0,
+    "cvss_vector": "AV:N/AC:L/Au:N/C:N/I:N/A:P",
+    "severity": "medium",
+    "published_date": "2007-12-19",
+    "affected": [
+      "apache httpd",
+      "http"
+    ],
+    "remediation": "Configure request timeout limits. Use mod_reqtimeout. Deploy a reverse proxy or load balancer with connection limits.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2007-6750"
+    ]
+  },
+  "CVE-2010-4344": {
+    "title": "Exim SMTP Heap Overflow Remote Code Execution",
+    "description": "Heap-based buffer overflow in the smtp_respond function in Exim 4.70 and earlier allows remote attackers to execute arbitrary code via long SMTP command arguments.",
+    "cvss_score": 9.3,
+    "cvss_vector": "AV:N/AC:M/Au:N/C:C/I:C/A:C",
+    "severity": "critical",
+    "published_date": "2010-12-14",
+    "affected": [
+      "exim 4.70",
+      "smtp"
+    ],
+    "remediation": "Upgrade Exim to version 4.73 or later. Restrict SMTP access to trusted hosts.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2010-4344"
+    ]
+  },
+  "CVE-2010-0425": {
+    "title": "Apache mod_isapi Dangling Pointer",
+    "description": "Apache HTTP Server mod_isapi allows remote attackers to cause a denial of service or execute arbitrary code via a request that triggers a module unload while another request is being processed.",
+    "cvss_score": 10.0,
+    "cvss_vector": "AV:N/AC:L/Au:N/C:C/I:C/A:C",
+    "severity": "critical",
+    "published_date": "2010-03-05",
+    "affected": [
+      "apache 2.2",
+      "apache mod_isapi"
+    ],
+    "remediation": "Upgrade Apache HTTP Server. Remove mod_isapi if not needed.",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2010-0425"
+    ]
+  }
+}

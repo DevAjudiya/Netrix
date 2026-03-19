@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
+import { formatDateIST } from '../utils/formatDate'
 
 const formatIcons = {
     pdf: FileText,
@@ -101,13 +102,7 @@ export default function Reports() {
         }
     }
 
-    const formatDate = (dateStr) => {
-        if (!dateStr) return '—'
-        return new Date(dateStr).toLocaleDateString('en-US', {
-            month: 'short', day: 'numeric', year: 'numeric',
-            hour: '2-digit', minute: '2-digit'
-        })
-    }
+    const formatDate = formatDateIST
 
     if (loading) {
         return (
@@ -255,7 +250,7 @@ export default function Reports() {
                                                         {report.format}
                                                     </span>
                                                 </td>
-                                                <td className="text-netrix-muted text-sm">{formatDate(report.created_at)}</td>
+                                                <td className="text-netrix-muted text-sm">{formatDate(report.generated_at || report.created_at)}</td>
                                                 <td className="font-mono text-xs text-netrix-muted">{report.scan_id || '—'}</td>
                                                 <td>
                                                     <div className="flex items-center gap-2">

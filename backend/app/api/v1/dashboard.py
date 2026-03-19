@@ -65,7 +65,27 @@ async def get_stats(
             Vulnerability.scan_id.in_(user_scan_ids),
             Vulnerability.severity == 'critical'
         ).count() if user_scan_ids else 0
-        
+
+        high = db.query(Vulnerability).filter(
+            Vulnerability.scan_id.in_(user_scan_ids),
+            Vulnerability.severity == 'high'
+        ).count() if user_scan_ids else 0
+
+        medium = db.query(Vulnerability).filter(
+            Vulnerability.scan_id.in_(user_scan_ids),
+            Vulnerability.severity == 'medium'
+        ).count() if user_scan_ids else 0
+
+        low = db.query(Vulnerability).filter(
+            Vulnerability.scan_id.in_(user_scan_ids),
+            Vulnerability.severity == 'low'
+        ).count() if user_scan_ids else 0
+
+        info = db.query(Vulnerability).filter(
+            Vulnerability.scan_id.in_(user_scan_ids),
+            Vulnerability.severity == 'info'
+        ).count() if user_scan_ids else 0
+
         total_reports = db.query(Report).filter(
             Report.user_id == uid
         ).count()
@@ -76,15 +96,30 @@ async def get_stats(
             Scan.created_at >= week_ago,
         ).count()
 
+        recent_scans = (
+            db.query(Scan)
+            .filter(Scan.user_id == uid)
+            .order_by(Scan.created_at.desc())
+            .limit(5)
+            .all()
+        )
+
         return {
             "total_scans": total_scans,
             "completed_scans": completed,
             "active_scans": running,
+            "total_hosts": total_hosts,
             "total_hosts_discovered": total_hosts,
             "total_vulnerabilities": total_vulns,
             "critical_vulnerabilities": critical,
+            "critical_count": critical,
+            "high_count": high,
+            "medium_count": medium,
+            "low_count": low,
+            "info_count": info,
             "total_reports": total_reports,
             "scans_this_week": scans_this_week,
+            "recent_scans": [s.to_dict() for s in recent_scans],
         }
     except Exception as e:
         print(f"[NETRIX] Stats error: {e}")
@@ -92,11 +127,18 @@ async def get_stats(
             "total_scans": 0,
             "completed_scans": 0,
             "active_scans": 0,
+            "total_hosts": 0,
             "total_hosts_discovered": 0,
             "total_vulnerabilities": 0,
             "critical_vulnerabilities": 0,
+            "critical_count": 0,
+            "high_count": 0,
+            "medium_count": 0,
+            "low_count": 0,
+            "info_count": 0,
             "total_reports": 0,
-            "scans_this_week": 0
+            "scans_this_week": 0,
+            "recent_scans": [],
         }
 
 
