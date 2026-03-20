@@ -1,57 +1,89 @@
 # ─────────────────────────────────────────
 # Netrix — cli/commands/report.py
-# Purpose: CLI commands for report generation, listing,
-#          and downloading.
-# Author: Netrix Development Team
+# Purpose: Report command — generate, list, download.
 # ─────────────────────────────────────────
 
-import os
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import httpx
 import typer
 from rich.console import Console
 
-from cli.config import API_BASE_URL, get_headers, is_logged_in
-from cli.utils.display import (
-    create_reports_table,
-    show_banner,
+from cli.api_client import NetrixAPIClient
+from cli.config import get_api_url, get_setting, is_logged_in
+from cli.ui.banners import show_banner
+from cli.ui.panels import (
+    show_connection_error,
     show_error,
     show_info,
     show_success,
     show_warning,
 )
-from cli.utils.progress import spinner
+from cli.ui.progress import spinner
+from cli.ui.prompts import prompt_report_formats, prompt_select_scan
+from cli.ui.tables import reports_table
+from cli.utils.validators import ALLOWED_FORMATS, is_valid_format
+
+console = Console()
 
 app = typer.Typer(
     name="report",
     help="Report generation — create, list, and download reports.",
     rich_markup_mode="rich",
+    hidden=True,
 )
-console = Console()
-
-ALLOWED_FORMATS = {"pdf", "json", "csv", "html"}
 
 
 # ─────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────
+
 def _require_login() -> None:
-    """Exit with a helpful message if the user is not logged in."""
+    from cli.config import is_token_valid, clear_token
+    from cli.commands.auth import do_login_interactive, do_register_interactive
+
+    if is_token_valid():
+        return
+
+    if is_logged_in():
+        show_warning("Your session has expired. Please login again.")
+        clear_token()
+    else:
+        show_warning("You are not logged in.")
+
+    try:
+        from InquirerPy import inquirer
+        action = inquirer.select(
+            message="What would you like to do?",
+            choices=[
+                {"name": "Login", "value": "login"},
+                {"name": "Register a new account", "value": "register"},
+                {"name": "Cancel", "value": "cancel"},
+            ],
+        ).execute()
+    except KeyboardInterrupt:
+        raise typer.Exit(0)
+
+    if action == "login":
+        do_login_interactive()
+    elif action == "register":
+        do_register_interactive()
+
     if not is_logged_in():
-        show_error("You are not logged in. Run: netrix auth login")
         raise typer.Exit(1)
 
 
 def _handle_api_error(resp: httpx.Response) -> None:
-    """Display a formatted error for common HTTP status codes."""
     if resp.status_code == 401:
-        show_error("Session expired. Please run: netrix auth login")
+        show_error("Session expired. Run: netrix login")
     elif resp.status_code == 404:
         show_error("Resource not found.")
     elif resp.status_code == 422:
-        detail = resp.json().get("detail", "Validation error")
+        try:
+            detail = resp.json().get("detail", "Validation error")
+        except Exception:
+            detail = "Validation error"
         show_error(f"Validation error: {detail}")
     elif resp.status_code >= 500:
         show_error("Server error. Please try again later.")
@@ -59,168 +91,175 @@ def _handle_api_error(resp: httpx.Response) -> None:
         show_error(f"Request failed (HTTP {resp.status_code}): {resp.text[:200]}")
 
 
-def _format_file_size(size_bytes: int) -> str:
-    """Return a human-readable file size string."""
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    if size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    return f"{size_bytes / (1024 * 1024):.1f} MB"
+def _download_and_save(
+    client: NetrixAPIClient,
+    report_id: int,
+    report_name: str,
+    output_dir: Path,
+) -> None:
+    """Download a report file and save to disk."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    save_path = output_dir / report_name
+
+    with spinner(f"Downloading {report_name}..."):
+        dl_resp = client.download_report(report_id)
+
+    if dl_resp.status_code == 200:
+        with open(save_path, "wb") as fh:
+            fh.write(dl_resp.content)
+        size_kb = len(dl_resp.content) // 1024 or 1
+        show_success(f"Saved: {save_path.resolve()} ({size_kb} KB)")
+    else:
+        show_warning(f"Report generated but download failed (HTTP {dl_resp.status_code})")
 
 
 # ─────────────────────────────────────────
-# netrix report generate
+# Core flat command: netrix report
 # ─────────────────────────────────────────
-@app.command("generate")
-def generate_report(
-    scan: int = typer.Option(
-        ..., "--scan", "-s",
-        help="Numeric scan ID to generate a report for.",
-    ),
-    fmt: str = typer.Option(
-        "pdf", "--format", "-f",
-        help="Report format: pdf | json | csv | html",
-    ),
-    output: Optional[str] = typer.Option(
-        None, "--output", "-o",
-        help="Output directory to save the report (default: current directory).",
-    ),
-    name: Optional[str] = typer.Option(
-        None, "--name", "-n",
-        help="Custom report name.",
-    ),
+
+def cmd_report(
+    scan_id: Optional[int] = None,
+    fmt: Optional[str] = None,
+    output: Optional[str] = None,
 ) -> None:
     """
-    Generate a report for a completed scan.
+    Generate a report for a scan.
+
+    With no arguments: interactive wizard to select scan and format.
+    With arguments: direct mode.
 
     Examples:
-        netrix report generate --scan 1 --format pdf
-        netrix report generate --scan 1 --format html --output ./reports
+        netrix report
+        netrix report --scan 1 --format pdf
+        netrix report --scan 1 --format json --output ./reports/
     """
     show_banner()
     _require_login()
 
-    fmt_lower = fmt.lower()
-    if fmt_lower not in ALLOWED_FORMATS:
-        show_error(
-            f"Invalid format: '{fmt}'\n"
-            f"  Allowed: {', '.join(sorted(ALLOWED_FORMATS))}"
-        )
-        raise typer.Exit(1)
+    api_url = get_api_url()
+    client = NetrixAPIClient(base_url=api_url)
+    output_dir = Path(output) if output else Path(get_setting("output_dir") or "./reports")
 
-    try:
-        headers = get_headers()
+    # ── Direct mode ────────────────────────────────────────────────────
+    if scan_id and fmt:
+        fmt_lower = fmt.lower()
+        if not is_valid_format(fmt_lower):
+            show_error(f"Invalid format: '{fmt}'. Allowed: {', '.join(sorted(ALLOWED_FORMATS))}")
+            raise typer.Exit(1)
 
-        # ── Generate report ──────────────────────────────────────
-        with spinner(f"Generating {fmt_lower.upper()} report..."):
-            resp = httpx.post(
-                f"{API_BASE_URL}/reports/generate",
-                json={"scan_id": scan, "format": fmt_lower},
-                headers=headers,
-                timeout=120.0,
-            )
+        try:
+            with spinner(f"Generating {fmt_lower.upper()} report for scan {scan_id}..."):
+                gen_resp = client.generate_report(scan_id, fmt_lower)
 
-        if resp.status_code in (200, 201):
-            report_data = resp.json()
-            report_id = report_data.get("id")
-            report_name = report_data.get("report_name", f"report_{scan}.{fmt_lower}")
-            file_size = report_data.get("file_size", 0)
-
-            # ── Download the report file ─────────────────────────
-            out_dir = Path(output) if output else Path.cwd()
-            out_dir.mkdir(parents=True, exist_ok=True)
-
-            save_name = name if name else report_name
-            save_path = out_dir / save_name
-
-            with spinner("Downloading report file..."):
-                dl_resp = httpx.get(
-                    f"{API_BASE_URL}/reports/{report_id}/download",
-                    headers=headers,
-                    timeout=120.0,
-                )
-
-            if dl_resp.status_code == 200:
-                with open(save_path, "wb") as fh:
-                    fh.write(dl_resp.content)
-
-                actual_size = save_path.stat().st_size
-                size_str = _format_file_size(actual_size)
-
-                console.print()
-                show_success("Report Generated!")
-                console.print(f"  [bold]📄 File:[/bold]     {save_name}")
-                console.print(f"  [bold]📁 Saved to:[/bold] {save_path.resolve()}")
-                console.print(f"  [bold]📊 Size:[/bold]     {size_str}")
-                console.print()
+            if gen_resp.status_code in (200, 201):
+                data = gen_resp.json()
+                _download_and_save(client, data["id"], data.get("report_name", f"report.{fmt_lower}"), output_dir)
             else:
-                show_warning(
-                    "Report generated on server but download failed. "
-                    f"You can download it later with report ID {report_id}."
-                )
-        else:
-            _handle_api_error(resp)
+                _handle_api_error(gen_resp)
+        except httpx.ConnectError:
+            show_connection_error(api_url)
+        except httpx.ReadTimeout:
+            show_error("Request timed out. Large scans take longer to generate.")
+        return
+
+    # ── Interactive wizard ─────────────────────────────────────────────
+    try:
+        console.print()
+        console.rule("[bold cyan]Report Generator[/bold cyan]")
+        console.print()
+
+        # Fetch completed scans
+        with spinner("Loading scans..."):
+            scans_resp = client.get_scans(page_size=50)
+
+        if scans_resp.status_code != 200:
+            _handle_api_error(scans_resp)
+            return
+
+        all_scans = scans_resp.json().get("scans", [])
+        completed = [s for s in all_scans if s.get("status") == "completed"]
+
+        if not completed:
+            show_info("No completed scans found. Run a scan first: netrix scan")
+            return
+
+        # Select scan
+        selected_id = prompt_select_scan(completed)
+        if selected_id is None:
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+        # Select formats
+        formats = prompt_report_formats()
+
+        # Generate each format
+        for fmt_lower in formats:
+            try:
+                with spinner(f"Generating {fmt_lower.upper()} report..."):
+                    gen_resp = client.generate_report(selected_id, fmt_lower)
+
+                if gen_resp.status_code in (200, 201):
+                    data = gen_resp.json()
+                    _download_and_save(
+                        client, data["id"],
+                        data.get("report_name", f"report.{fmt_lower}"),
+                        output_dir,
+                    )
+                else:
+                    _handle_api_error(gen_resp)
+            except Exception as e:
+                show_warning(f"Failed to generate {fmt_lower.upper()} report: {e}")
 
     except httpx.ConnectError:
-        show_error("Cannot connect to the Netrix backend. Is the server running?")
+        show_connection_error(api_url)
     except httpx.ReadTimeout:
-        show_error("Request timed out. Report generation may take a while for large scans.")
-    except SystemExit:
-        raise
+        show_error("Request timed out.")
+    except KeyboardInterrupt:
+        console.print("\n[dim]Cancelled.[/dim]")
 
 
 # ─────────────────────────────────────────
-# netrix report list
+# Backward-compatible sub-commands
 # ─────────────────────────────────────────
+
+@app.command("generate")
+def generate_report(
+    scan: int = typer.Option(..., "--scan", "-s", help="Numeric scan ID"),
+    fmt: str = typer.Option("pdf", "--format", "-f", help="Format: pdf|json|csv|html"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory"),
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Custom report name"),
+) -> None:
+    """Generate a report for a completed scan."""
+    cmd_report(scan_id=scan, fmt=fmt, output=output)
+
+
 @app.command("list")
 def list_reports(
-    limit: int = typer.Option(
-        20, "--limit", "-l",
-        help="Maximum number of reports to display.",
-    ),
-    fmt: Optional[str] = typer.Option(
-        None, "--format", "-f",
-        help="Filter by format: pdf | json | csv | html",
-    ),
+    limit: int = typer.Option(20, "--limit", "-l"),
+    fmt: Optional[str] = typer.Option(None, "--format", "-f"),
 ) -> None:
-    """
-    List all generated reports.
-    """
+    """List all generated reports."""
     show_banner()
     _require_login()
 
+    api_url = get_api_url()
+    client = NetrixAPIClient(base_url=api_url)
     try:
-        headers = get_headers()
-        params: dict = {"page_size": limit}
-        if fmt:
-            params["format"] = fmt.lower()
-
-        resp = httpx.get(
-            f"{API_BASE_URL}/reports/",
-            headers=headers,
-            params=params,
-            timeout=15.0,
-        )
+        with spinner("Fetching reports..."):
+            resp = client.get_reports(page_size=limit, format=fmt)
 
         if resp.status_code == 200:
             data = resp.json()
-            reports = data.get("reports", [])
-            total = data.get("total", len(reports))
-
-            if not reports:
+            report_list = data.get("reports", [])
+            total = data.get("total", len(report_list))
+            if not report_list:
                 show_info("No reports found.")
                 return
-
-            console.print(create_reports_table(reports))
-            console.print(
-                f"\n[dim]Showing {len(reports)} of {total} total reports[/dim]"
-            )
+            console.print(reports_table(report_list))
+            console.print(f"\n[dim]Showing {len(report_list)} of {total} total reports[/dim]")
         else:
             _handle_api_error(resp)
-
     except httpx.ConnectError:
-        show_error("Cannot connect to the Netrix backend. Is the server running?")
+        show_connection_error(api_url)
     except httpx.ReadTimeout:
         show_error("Request timed out.")
-    except SystemExit:
-        raise
