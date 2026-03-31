@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/ui/panels.py
 # Purpose: Rich panels for errors, success, info, warnings,

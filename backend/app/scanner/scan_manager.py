@@ -71,6 +71,7 @@ class ScanManager:
         db_session: Session,
         custom_args: str = "",
         custom_ports: str = "",
+        is_admin: bool = False,
     ) -> str:
         """
         Validate, register, and launch a scan asynchronously.
@@ -111,19 +112,20 @@ class ScanManager:
             raise
 
         # ── Rate limit ───────────────────────────────────────────
-        user_scan_count = self.get_scan_count_for_user(
-            user_id, db_session, hours=1,
-        )
-        max_scans = settings.MAX_SCANS_PER_USER_PER_HOUR
-        if user_scan_count >= max_scans:
-            logger.warning(
-                "[NETRIX] User %d exceeded scan limit (%d/%d per hour)",
-                user_id, user_scan_count, max_scans,
+        if not is_admin:
+            user_scan_count = self.get_scan_count_for_user(
+                user_id, db_session, hours=1,
             )
-            raise RateLimitExceededException(
-                message=f"Scan limit exceeded — maximum {max_scans} scans per hour.",
-                details=f"You have run {user_scan_count} scan(s) in the last hour.",
-            )
+            max_scans = settings.MAX_SCANS_PER_USER_PER_HOUR
+            if user_scan_count >= max_scans:
+                logger.warning(
+                    "[NETRIX] User %d exceeded scan limit (%d/%d per hour)",
+                    user_id, user_scan_count, max_scans,
+                )
+                raise RateLimitExceededException(
+                    message=f"Scan limit exceeded — maximum {max_scans} scans per hour.",
+                    details=f"You have run {user_scan_count} scan(s) in the last hour.",
+                )
 
         # ── Duplicate check ──────────────────────────────────────
         for sid, info in self.active_scans.items():
@@ -261,17 +263,38 @@ class ScanManager:
         """
         Return the current status of a scan.
 
-        If the scan is no longer in ``active_scans`` it is assumed
-        to have completed.
+        Checks the in-memory tracker first, then falls back to the
+        database so that server restarts or multi-worker deployments
+        don't falsely report a running scan as completed.
         """
         if scan_id in self.active_scans:
             return self.active_scans[scan_id]
 
+        # Fall back to DB — don't assume "completed" for unknown scans
+        try:
+            from app.database.session import SessionLocal
+            from app.models.scan import Scan as ScanModel
+            db = SessionLocal()
+            try:
+                scan = db.query(ScanModel).filter(ScanModel.scan_id == scan_id).first()
+                if scan:
+                    return {
+                        "scan_id": scan_id,
+                        "status": scan.status,
+                        "progress": scan.progress or 0,
+                        "total_hosts": scan.hosts_up or 0,
+                        "message": "Status from database",
+                    }
+            finally:
+                db.close()
+        except Exception:
+            pass
+
         return {
             "scan_id": scan_id,
-            "status": "completed",
-            "progress": 100,
-            "message": "Scan is no longer active — check the database for results",
+            "status": "unknown",
+            "progress": 0,
+            "message": "Scan not found",
         }
 
     # ─────────────────────────────────────
@@ -456,7 +479,10 @@ class ScanManager:
                 self.push_event(scan_id, event)
 
             # ── Run the scan ─────────────────────────────────────
-            summary = self.engine.run_scan(
+            # Create a fresh NmapEngine per thread so self.nm is never
+            # shared across concurrent scans (race condition fix).
+            local_engine = NmapEngine()
+            summary = local_engine.run_scan(
                 target=target,
                 scan_type=scan_type,
                 custom_args=custom_args,
@@ -467,11 +493,29 @@ class ScanManager:
             )
 
             # ── Persist to DB ────────────────────────────────────
-            scan_db_id = self.engine.save_to_database(
+            scan_db_id = local_engine.save_to_database(
                 summary=summary,
                 db_session=db,
                 user_id=user_id,
             )
+
+            # ── NVD API lookup by detected product/version ────────
+            if scan_db_id:
+                try:
+                    from app.services.cve_service import fetch_nvd_cves_for_scan
+                    nvd_result = fetch_nvd_cves_for_scan(
+                        scan_db_id=scan_db_id,
+                        db=db,
+                        push_event=lambda e: self.push_event(scan_id, e),
+                    )
+                    logger.info(
+                        "[NETRIX] NVD lookup for scan %d: %s",
+                        scan_db_id, nvd_result,
+                    )
+                except Exception as nvd_err:
+                    logger.warning(
+                        "[NETRIX] NVD lookup failed (non-fatal): %s", str(nvd_err)
+                    )
 
             # ── Enrich CVE data post-save ─────────────────────────
             if scan_db_id:
@@ -491,6 +535,25 @@ class ScanManager:
                         str(enrich_err),
                     )
 
+            # ── Query real vuln counts from DB after enrichment ───
+            # summary.total_vulnerabilities only counts NSE-detected vulns.
+            # Service-based CVE matching adds more records to the DB after
+            # save_to_database, so we query the actual count here.
+            actual_vuln_count = summary.total_vulnerabilities
+            actual_critical = summary.critical_hosts
+            if scan_db_id:
+                try:
+                    from app.models.vulnerability import Vulnerability as _VulnModel
+                    actual_vuln_count = db.query(_VulnModel).filter(
+                        _VulnModel.scan_id == scan_db_id
+                    ).count()
+                    actual_critical = db.query(_VulnModel).filter(
+                        _VulnModel.scan_id == scan_db_id,
+                        _VulnModel.severity == "critical",
+                    ).count()
+                except Exception:
+                    pass
+
             # Push scan_complete event
             duration_secs = summary.duration_seconds
             minutes = int(duration_secs // 60)
@@ -502,8 +565,8 @@ class ScanManager:
                 "progress": 100,
                 "total_hosts": summary.hosts_up,
                 "total_ports": summary.total_open_ports,
-                "total_vulns": summary.total_vulnerabilities,
-                "critical_count": summary.critical_hosts,
+                "total_vulns": actual_vuln_count,
+                "critical_count": actual_critical,
                 "duration": duration_str,
                 "message": "✅ Scan completed successfully!",
             })

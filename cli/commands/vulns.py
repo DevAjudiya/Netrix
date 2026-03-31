@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/commands/vulns.py
 # Purpose: Vulnerability browser — list, filter, and view CVE details.

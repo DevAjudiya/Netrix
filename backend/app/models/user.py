@@ -88,6 +88,14 @@ class User(Base):
         nullable=True,
     )
 
+    # ── API Key ───────────────────────────────────────────────────
+    api_key: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        unique=True,
+        nullable=True,
+        index=True,
+    )
+
     # ── Relationships ────────────────────────────────────────────
     scans = relationship(
         "Scan",

@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useState, useEffect } from 'react'
 import { reportsAPI, scansAPI } from '../services/api'
 import {
@@ -73,14 +74,26 @@ export default function Reports() {
         }
     }
 
-    const handleDownload = async (reportId, reportFileName) => {
+    const mimeTypes = {
+        pdf: 'application/pdf',
+        json: 'application/json',
+        csv: 'text/csv',
+        html: 'text/html'
+    }
+
+    const handleDownload = async (reportId, reportFileName, reportFormat) => {
         setDownloading(reportId)
         try {
             const res = await reportsAPI.download(reportId)
-            const url = window.URL.createObjectURL(new Blob([res.data]))
+            const mime = mimeTypes[reportFormat] || 'application/octet-stream'
+            const url = window.URL.createObjectURL(new Blob([res.data], { type: mime }))
             const link = document.createElement('a')
             link.href = url
-            link.setAttribute('download', reportFileName || `report_${reportId}`)
+            // Ensure filename has the correct extension
+            const baseName = reportFileName || `report_${reportId}`
+            const ext = reportFormat ? `.${reportFormat}` : ''
+            const hasExt = ext && baseName.toLowerCase().endsWith(ext)
+            link.setAttribute('download', hasExt ? baseName : `${baseName}${ext}`)
             document.body.appendChild(link)
             link.click()
             link.remove()
@@ -255,7 +268,7 @@ export default function Reports() {
                                                 <td>
                                                     <div className="flex items-center gap-2">
                                                         <button
-                                                            onClick={() => handleDownload(report.id, report.file_name || report.report_name)}
+                                                            onClick={() => handleDownload(report.id, report.file_name || report.report_name, report.format)}
                                                             disabled={downloading === report.id}
                                                             className="p-2 rounded-lg hover:bg-netrix-accent/10 text-netrix-muted hover:text-netrix-accent transition-all"
                                                             title="Download"

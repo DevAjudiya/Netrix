@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/commands/report.py
 # Purpose: Report command — generate, list, download.

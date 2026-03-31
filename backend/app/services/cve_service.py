@@ -477,6 +477,198 @@ class CVEService:
 
 
 # ─────────────────────────────────────────
+# NVD API lookup by detected product/version
+# ─────────────────────────────────────────
+
+def fetch_nvd_cves_for_scan(
+    scan_db_id: int,
+    db: Session,
+    push_event=None,
+) -> Dict:
+    """
+    Query the NVD API for CVEs based on product/version detected on each port.
+
+    For each port with a known product (or service name):
+        1. If a CPE string is available, call search_cves_by_cpe() (most precise).
+        2. Otherwise call search_cves_by_keyword("product version") (up to 5 results).
+    New CVE records are inserted as Vulnerability rows with source="nvd_api".
+    Duplicate CVE IDs within the same scan are skipped.
+
+    Args:
+        scan_db_id: Database primary key of the Scan record.
+        db:         SQLAlchemy session used for all queries and inserts.
+        push_event: Optional callable(event_dict) — called for each new CVE found,
+                    forwarded to WebSocket subscribers as a ``cve_found`` event.
+
+    Returns:
+        dict: {"ports_processed", "cves_found", "cves_saved"}
+    """
+    from app.models.port import Port
+    from app.models.host import Host
+
+    engine = CVEEngine()
+    ports_processed = cves_found = cves_saved = 0
+
+    try:
+        # ── Collect all ports for this scan ──────────────────────
+        ports = (
+            db.query(Port)
+            .join(Host, Port.host_id == Host.id)
+            .filter(Host.scan_id == scan_db_id)
+            .all()
+        )
+
+        if not ports:
+            logger.info("[NVD LOOKUP] No ports found for scan %d", scan_db_id)
+            return {"ports_processed": 0, "cves_found": 0, "cves_saved": 0}
+
+        logger.info(
+            "[NVD LOOKUP] Starting NVD lookup for %d ports in scan %d",
+            len(ports), scan_db_id,
+        )
+
+        # ── Pre-load existing CVE IDs to avoid duplicates ────────
+        existing_cve_ids: set = {
+            row[0]
+            for row in db.query(Vulnerability.cve_id)
+            .filter(Vulnerability.scan_id == scan_db_id)
+            .all()
+            if row[0]
+        }
+
+        # ── Deduplicate: only query NVD once per unique product/version ──
+        queried_keys: set = set()
+
+        for port in ports:
+            product = (port.product or "").strip()
+            version = (port.version or "").strip()
+            cpe = (port.cpe or "").strip()
+            service_name = (port.service_name or "").strip()
+
+            # Prefer product name; fall back to service name only for known
+            # security-relevant services.  Generic protocol names like "domain",
+            # "msrpc", "bgp", "ldp", "submission" waste API quota and return
+            # unrelated CVEs, so skip them when there is no specific product.
+            _SKIP_GENERIC = {
+                "domain", "msrpc", "netbios-ssn", "netbios-ns", "submission",
+                "ldp", "bgp", "sunrpc", "unknown", "tcpwrapped", "rsftp",
+                "pptp", "irc", "epmd", "x11",
+            }
+            if product:
+                search_term = product
+            elif service_name and service_name.lower() not in _SKIP_GENERIC:
+                search_term = service_name
+            else:
+                continue
+
+            dedup_key = f"{cpe}{search_term.lower()}{version.lower()}"
+            if dedup_key in queried_keys:
+                continue
+            queried_keys.add(dedup_key)
+            ports_processed += 1
+
+            # ── NVD query ────────────────────────────────────────
+            cve_list: List[CVEDetail] = []
+
+            if cpe:
+                cve_list = engine.search_cves_by_cpe(cpe)
+                if cve_list:
+                    logger.info(
+                        "[NVD LOOKUP] CPE '%s' → %d CVEs", cpe, len(cve_list)
+                    )
+
+            if not cve_list:
+                keyword = f"{search_term} {version}".strip() if version else search_term
+                cve_list = engine.search_cves_by_keyword(keyword, max_results=5)
+                if cve_list:
+                    logger.info(
+                        "[NVD LOOKUP] Keyword '%s' → %d CVEs", keyword, len(cve_list)
+                    )
+
+            if not cve_list:
+                continue
+
+            cves_found += len(cve_list)
+
+            # ── Save new CVEs ─────────────────────────────────────
+            for cve in cve_list:
+                if not cve.cve_id:
+                    continue
+                if cve.cve_id in existing_cve_ids:
+                    continue
+
+                pub_date = None
+                if cve.published_date:
+                    try:
+                        pub_date = datetime.strptime(
+                            cve.published_date[:10], "%Y-%m-%d"
+                        ).date()
+                    except (ValueError, TypeError):
+                        pass
+
+                db.add(Vulnerability(
+                    scan_id=scan_db_id,
+                    host_id=port.host_id,
+                    port_id=port.id,
+                    cve_id=cve.cve_id,
+                    cvss_score=cve.cvss_score if cve.cvss_score else None,
+                    cvss_vector=cve.cvss_vector or None,
+                    severity=cve.severity or "info",
+                    title=(cve.title or cve.cve_id)[:255],
+                    description=cve.description or None,
+                    remediation=cve.remediation or None,
+                    published_date=pub_date,
+                    source="nvd_api",
+                ))
+                existing_cve_ids.add(cve.cve_id)
+                cves_saved += 1
+
+                if push_event:
+                    try:
+                        push_event({
+                            "event": "cve_found",
+                            "cve_id": cve.cve_id,
+                            "severity": cve.severity,
+                            "cvss_score": cve.cvss_score,
+                            "title": (cve.title or cve.cve_id)[:100],
+                            "service": f"{search_term} {version}".strip(),
+                            "port": port.port_number,
+                            "source": "nvd_api",
+                            "message": (
+                                f"🔍 NVD: {cve.cve_id} ({cve.severity.upper()}) "
+                                f"on port {port.port_number}"
+                            ),
+                        })
+                    except Exception:
+                        pass
+
+        try:
+            db.commit()
+        except Exception as commit_err:
+            db.rollback()
+            logger.error("[NVD LOOKUP] Commit failed: %s", commit_err)
+            return {
+                "ports_processed": ports_processed,
+                "cves_found": cves_found,
+                "cves_saved": 0,
+            }
+
+        logger.info(
+            "[NVD LOOKUP] Complete for scan %d: ports=%d cves_found=%d cves_saved=%d",
+            scan_db_id, ports_processed, cves_found, cves_saved,
+        )
+
+    except Exception as exc:
+        logger.error("[NVD LOOKUP] Failed for scan %d: %s", scan_db_id, exc)
+
+    return {
+        "ports_processed": ports_processed,
+        "cves_found": cves_found,
+        "cves_saved": cves_saved,
+    }
+
+
+# ─────────────────────────────────────────
 # NVD Sync
 # ─────────────────────────────────────────
 

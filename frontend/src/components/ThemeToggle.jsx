@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useTheme } from '../context/ThemeContext'
 import { Sun, Moon } from 'lucide-react'
 

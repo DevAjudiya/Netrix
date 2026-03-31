@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useState, useEffect, useCallback } from 'react'
 import {
     ClipboardList, Filter, Download, ChevronLeft, ChevronRight,

@@ -224,6 +224,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             request_path in _SCAN_PATHS
             and request.method == "POST"
         ):
+            # Admins are exempt from the scan rate limit
+            if self._is_admin_user(request):
+                return await call_next(request)
+
             settings = get_settings()
             scan_limit = settings.MAX_SCANS_PER_USER_PER_HOUR
 
@@ -272,6 +276,29 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.client:
             return request.client.host
         return "unknown"
+
+    @staticmethod
+    def _is_admin_user(request: Request) -> bool:
+        """
+        Return True if the JWT in the Authorization header belongs to an admin.
+
+        Uses the same lightweight decode as _get_user_identifier — no
+        signature verification (that happens later in the security layer).
+        """
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            try:
+                import base64
+                payload_segment = token.split(".")[1]
+                padding = 4 - len(payload_segment) % 4
+                if padding != 4:
+                    payload_segment += "=" * padding
+                payload = json.loads(base64.urlsafe_b64decode(payload_segment))
+                return payload.get("role") == "admin"
+            except (IndexError, ValueError, json.JSONDecodeError):
+                pass
+        return False
 
     @staticmethod
     def _get_user_identifier(request: Request) -> Optional[str]:

@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/api_client.py
 # Purpose: Centralized API client — all backend calls go through here.

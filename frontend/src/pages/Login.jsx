@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useState } from 'react'
 import { useDispatch } from 'react-redux'
 import { useNavigate, useLocation } from 'react-router-dom'
@@ -191,6 +192,8 @@ export default function Login() {
 
                 <p className="text-center text-netrix-muted/40 text-xs mt-6">
                     Netrix v1.0 — Network Scanning &amp; Vulnerability Assessment
+                    <br />
+                    &copy; 2026 @DevAjudiya. All rights reserved.
                 </p>
             </div>
         </div>

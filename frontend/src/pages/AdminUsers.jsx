@@ -1,9 +1,10 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useState, useEffect, useCallback } from 'react'
 import {
     Users, UserCheck, UserX, Shield, BarChart2,
     Search, ChevronLeft, ChevronRight, Edit2,
     Ban, Trash2, KeyRound, X, Check, AlertTriangle,
-    RefreshCw, Copy
+    RefreshCw, Copy, ShieldPlus, ShieldMinus
 } from 'lucide-react'
 import Layout from '../components/Layout'
 import { adminAPI } from '../services/api'
@@ -97,10 +98,11 @@ function EditModal({ user, onClose, onSaved }) {
                     <div className="flex items-center justify-between">
                         <span className="text-sm text-netrix-muted">Account Active</span>
                         <button
+                            type="button"
                             onClick={() => setIsActive(v => !v)}
-                            className={`relative w-10 h-5 rounded-full transition-colors ${isActive ? 'bg-netrix-accent' : 'bg-netrix-border'}`}
+                            className={`relative inline-flex items-center h-5 w-10 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${isActive ? 'bg-netrix-accent' : 'bg-netrix-border'}`}
                         >
-                            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${isActive ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                            <span className={`inline-block h-4 w-4 rounded-full bg-white shadow ring-0 transition-transform duration-200 ${isActive ? 'translate-x-5' : 'translate-x-0'}`} />
                         </button>
                     </div>
 
@@ -108,10 +110,11 @@ function EditModal({ user, onClose, onSaved }) {
                     <div className="flex items-center justify-between">
                         <span className="text-sm text-netrix-muted">Banned</span>
                         <button
+                            type="button"
                             onClick={() => setIsBanned(v => !v)}
-                            className={`relative w-10 h-5 rounded-full transition-colors ${isBanned ? 'bg-red-500' : 'bg-netrix-border'}`}
+                            className={`relative inline-flex items-center h-5 w-10 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${isBanned ? 'bg-red-500' : 'bg-netrix-border'}`}
                         >
-                            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${isBanned ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                            <span className={`inline-block h-4 w-4 rounded-full bg-white shadow ring-0 transition-transform duration-200 ${isBanned ? 'translate-x-5' : 'translate-x-0'}`} />
                         </button>
                     </div>
 
@@ -238,6 +241,7 @@ export default function AdminUsers() {
     const [deleting, setDeleting] = useState(false)
     const [resetting, setResetting] = useState(null)  // user id being reset
     const [resetResult, setResetResult] = useState(null)  // { username, tempPassword }
+    const [promotingRole, setPromotingRole] = useState(null)  // user id being role-toggled
 
     const PAGE_SIZE = 20
 
@@ -299,6 +303,22 @@ export default function AdminUsers() {
             setDeleteConfirm(null)
         } finally {
             setDeleting(false)
+        }
+    }
+
+    // ── Toggle role ────────────────────────────────────────────────────
+
+    const handleToggleRole = async (user) => {
+        const newRole = user.role === 'admin' ? 'analyst' : 'admin'
+        setPromotingRole(user.id)
+        try {
+            await adminAPI.updateUser(user.id, { role: newRole })
+            fetchUsers()
+            fetchStats()
+        } catch (err) {
+            setError(err.response?.data?.detail || 'Role update failed.')
+        } finally {
+            setPromotingRole(null)
         }
     }
 
@@ -436,6 +456,23 @@ export default function AdminUsers() {
                                                     className="p-1.5 rounded-lg text-netrix-muted hover:text-netrix-accent hover:bg-netrix-accent/10 transition-all"
                                                 >
                                                     <Edit2 className="w-4 h-4" />
+                                                </button>
+                                                <button
+                                                    onClick={() => handleToggleRole(user)}
+                                                    disabled={promotingRole === user.id}
+                                                    title={user.role === 'admin' ? 'Demote to Analyst' : 'Promote to Admin'}
+                                                    className={`p-1.5 rounded-lg transition-all disabled:opacity-50 ${
+                                                        user.role === 'admin'
+                                                            ? 'text-netrix-muted hover:text-orange-400 hover:bg-orange-400/10'
+                                                            : 'text-netrix-muted hover:text-purple-400 hover:bg-purple-400/10'
+                                                    }`}
+                                                >
+                                                    {promotingRole === user.id
+                                                        ? <RefreshCw className="w-4 h-4 animate-spin" />
+                                                        : user.role === 'admin'
+                                                            ? <ShieldMinus className="w-4 h-4" />
+                                                            : <ShieldPlus className="w-4 h-4" />
+                                                    }
                                                 </button>
                                                 <button
                                                     onClick={() => handleResetPassword(user)}

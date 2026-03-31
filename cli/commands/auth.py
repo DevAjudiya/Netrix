@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/commands/auth.py
 # Purpose: Auth commands — login, register, logout, whoami.

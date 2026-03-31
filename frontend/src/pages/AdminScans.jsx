@@ -1,8 +1,11 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
     Scan, Filter, Trash2, StopCircle, RefreshCw,
     ChevronLeft, ChevronRight, AlertTriangle, X,
-    Calendar, User, Tag, Activity, Check
+    Calendar, User, Tag, Activity, Check, Eye,
+    Server, Globe, Shield, ChevronDown, ChevronUp,
+    Monitor, Cpu, Network
 } from 'lucide-react'
 import Layout from '../components/Layout'
 import { adminAPI } from '../services/api'
@@ -123,6 +126,127 @@ function ConfirmDialog({ title, body, confirmLabel, confirmClass, onConfirm, onC
     )
 }
 
+// ── Severity badge ────────────────────────────────────────────────────────
+
+function SevBadge({ severity }) {
+    const map = {
+        critical: 'bg-red-500/15 text-red-400 border-red-500/30',
+        high:     'bg-orange-500/15 text-orange-400 border-orange-500/30',
+        medium:   'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
+        low:      'bg-blue-500/15 text-blue-400 border-blue-500/30',
+        info:     'bg-gray-500/15 text-gray-400 border-gray-500/30',
+    }
+    return (
+        <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border uppercase ${map[severity] ?? map.info}`}>
+            {severity}
+        </span>
+    )
+}
+
+// ── Host Card ─────────────────────────────────────────────────────────────
+
+function HostCard({ host }) {
+    const [open, setOpen] = useState(false)
+    return (
+        <div className="border border-netrix-border/50 rounded-xl overflow-hidden">
+            <button
+                onClick={() => setOpen(o => !o)}
+                className="w-full flex items-center justify-between px-4 py-3 hover:bg-netrix-bg/30 transition-colors text-left"
+            >
+                <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-netrix-accent/10 flex items-center justify-center">
+                        <Monitor className="w-4 h-4 text-netrix-accent" />
+                    </div>
+                    <div>
+                        <div className="text-sm font-mono text-netrix-text font-medium">{host.ip_address}</div>
+                        {host.hostname && <div className="text-[11px] text-netrix-muted">{host.hostname}</div>}
+                    </div>
+                    {host.os_name && (
+                        <div className="flex items-center gap-1 text-[11px] text-netrix-muted bg-netrix-bg px-2 py-0.5 rounded border border-netrix-border">
+                            <Cpu className="w-3 h-3" />{host.os_name}
+                        </div>
+                    )}
+                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${host.status === 'up' ? 'bg-green-500/15 text-green-400 border-green-500/30' : 'bg-gray-500/15 text-gray-400 border-gray-500/30'}`}>
+                        {host.status}
+                    </span>
+                </div>
+                <div className="flex items-center gap-3 text-xs text-netrix-muted">
+                    <span className="flex items-center gap-1"><Network className="w-3 h-3" />{host.ports?.length ?? 0} ports</span>
+                    <span className="flex items-center gap-1"><Shield className="w-3 h-3" />{host.vulnerabilities?.length ?? 0} vulns</span>
+                    {open ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                </div>
+            </button>
+
+            {open && (
+                <div className="border-t border-netrix-border/40 bg-netrix-bg/20">
+                    {/* Ports */}
+                    {host.ports?.length > 0 && (
+                        <div className="p-4 space-y-2">
+                            <div className="text-xs font-semibold text-netrix-muted uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                                <Network className="w-3 h-3" /> Open Ports
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-xs">
+                                    <thead>
+                                        <tr className="text-netrix-muted border-b border-netrix-border/40">
+                                            {['Port', 'Proto', 'State', 'Service', 'Product / Version'].map(h => (
+                                                <th key={h} className="pb-1.5 pr-4 text-left font-medium">{h}</th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-netrix-border/20">
+                                        {host.ports.map(p => {
+                                            const sv = [p.product, p.version, p.extra_info].filter(Boolean).join(' ') || '—'
+                                            return (
+                                            <tr key={p.id} className="text-netrix-text">
+                                                <td className="py-1.5 pr-4 font-mono text-netrix-accent font-medium">{p.port_number}</td>
+                                                <td className="py-1.5 pr-4 text-netrix-muted">{p.protocol}</td>
+                                                <td className="py-1.5 pr-4">
+                                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${p.state === 'open' ? 'bg-green-500/15 text-green-400 border-green-500/30' : 'bg-gray-500/15 text-gray-400 border-gray-500/30'}`}>
+                                                        {p.state}
+                                                    </span>
+                                                </td>
+                                                <td className="py-1.5 pr-4">{p.service_name || '—'}</td>
+                                                <td className="py-1.5 text-netrix-muted">{sv}</td>
+                                            </tr>
+                                            )
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+                    {/* Vulnerabilities */}
+                    {host.vulnerabilities?.length > 0 && (
+                        <div className="px-4 pb-4 space-y-2 border-t border-netrix-border/30">
+                            <div className="text-xs font-semibold text-netrix-muted uppercase tracking-wider mt-3 mb-2 flex items-center gap-1.5">
+                                <Shield className="w-3 h-3" /> Vulnerabilities
+                            </div>
+                            <div className="space-y-2">
+                                {host.vulnerabilities.map(v => (
+                                    <div key={v.id} className="flex items-start gap-3 p-3 bg-netrix-bg rounded-lg border border-netrix-border/40">
+                                        <SevBadge severity={v.severity} />
+                                        <div className="flex-1 min-w-0">
+                                            <div className="text-xs text-netrix-text font-medium truncate">{v.cve_id || v.name}</div>
+                                            {v.description && <div className="text-[11px] text-netrix-muted mt-0.5 line-clamp-2">{v.description}</div>}
+                                        </div>
+                                        {v.cvss_score != null && (
+                                            <span className="text-xs font-mono text-netrix-muted shrink-0">CVSS {v.cvss_score}</span>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                    {(!host.ports?.length && !host.vulnerabilities?.length) && (
+                        <div className="px-4 py-3 text-xs text-netrix-muted">No ports or vulnerabilities recorded.</div>
+                    )}
+                </div>
+            )}
+        </div>
+    )
+}
+
 // ── Main Page ──────────────────────────────────────────────────────────────
 
 export default function AdminScans() {
@@ -150,6 +274,12 @@ export default function AdminScans() {
     const [deleteTarget, setDeleteTarget] = useState(null)
     const [stopTarget, setStopTarget] = useState(null)
     const [actionLoading, setActionLoading] = useState(false)
+
+    // ── Inline expanded rows ───────────────────────────────────────
+    // expandedRows: Set of scan_id strings currently expanded
+    // detailCache:  { [scan_id]: { data, loading, error } }
+    const [expandedRows, setExpandedRows] = useState(new Set())
+    const [detailCache, setDetailCache] = useState({})
 
     // ── Fetch users for dropdown ───────────────────────────────────
     useEffect(() => {
@@ -220,6 +350,27 @@ export default function AdminScans() {
             setDeleteTarget(null)
         } finally {
             setActionLoading(false)
+        }
+    }
+
+    // ── Toggle inline detail row ───────────────────────────────────
+    const toggleDetail = async (scan) => {
+        const sid = scan.scan_id
+        setExpandedRows(prev => {
+            const next = new Set(prev)
+            if (next.has(sid)) { next.delete(sid); return next }
+            next.add(sid)
+            return next
+        })
+        // fetch only if not cached yet
+        if (detailCache[sid]) return
+        setDetailCache(prev => ({ ...prev, [sid]: { data: null, loading: true, error: '' } }))
+        try {
+            const res = await adminAPI.getScanDetails(sid)
+            setDetailCache(prev => ({ ...prev, [sid]: { data: res.data, loading: false, error: '' } }))
+        } catch (err) {
+            const msg = err.response?.data?.detail || 'Failed to load scan details.'
+            setDetailCache(prev => ({ ...prev, [sid]: { data: null, loading: false, error: msg } }))
         }
     }
 
@@ -412,53 +563,118 @@ export default function AdminScans() {
                                             No scans match the current filters.
                                         </td>
                                     </tr>
-                                ) : scans.map(scan => (
-                                    <tr
-                                        key={scan.id}
-                                        className={`hover:bg-netrix-bg/30 transition-colors ${scan.status === 'running' ? 'bg-blue-500/[0.03]' : ''}`}
-                                    >
-                                        <td className="px-4 py-3">
-                                            <span className="font-mono text-xs text-netrix-accent">{scan.scan_id}</span>
-                                        </td>
-                                        <td className="px-4 py-3 text-netrix-text text-sm max-w-[180px] truncate" title={scan.target}>
-                                            {scan.target}
-                                        </td>
-                                        <td className="px-4 py-3">
-                                            <div className="text-sm text-netrix-text font-medium leading-tight">{scan.username}</div>
-                                            <div className="text-[11px] text-netrix-muted">{scan.email}</div>
-                                        </td>
-                                        <td className="px-4 py-3"><TypeBadge type={scan.scan_type} /></td>
-                                        <td className="px-4 py-3"><StatusBadge status={scan.status} /></td>
-                                        <td className="px-4 py-3 w-32">
-                                            <ProgressBar value={scan.progress} status={scan.status} />
-                                        </td>
-                                        <td className="px-4 py-3 text-netrix-muted text-xs whitespace-nowrap">
-                                            {scan.started_at ? formatDateIST(scan.started_at) : '—'}
-                                        </td>
-                                        <td className="px-4 py-3">
-                                            <div className="flex items-center gap-1">
-                                                {/* Stop — only for running/pending */}
-                                                {(scan.status === 'running' || scan.status === 'pending') && (
+                                ) : scans.map(scan => {
+                                    const isExpanded = expandedRows.has(scan.scan_id)
+                                    const cache = detailCache[scan.scan_id]
+                                    return (
+                                        <>
+                                        <tr
+                                            key={scan.id}
+                                            className={`transition-colors cursor-pointer
+                                                ${isExpanded ? 'bg-netrix-accent/[0.04] border-l-2 border-l-netrix-accent' : 'hover:bg-netrix-bg/30'}
+                                                ${scan.status === 'running' ? 'bg-blue-500/[0.03]' : ''}
+                                            `}
+                                        >
+                                            <td className="px-4 py-3">
+                                                <span className="font-mono text-xs text-netrix-accent">{scan.scan_id}</span>
+                                            </td>
+                                            <td className="px-4 py-3 text-netrix-text text-sm max-w-[180px] truncate" title={scan.target}>
+                                                {scan.target}
+                                            </td>
+                                            <td className="px-4 py-3">
+                                                <div className="text-sm text-netrix-text font-medium leading-tight">{scan.username}</div>
+                                                <div className="text-[11px] text-netrix-muted">{scan.email}</div>
+                                            </td>
+                                            <td className="px-4 py-3"><TypeBadge type={scan.scan_type} /></td>
+                                            <td className="px-4 py-3"><StatusBadge status={scan.status} /></td>
+                                            <td className="px-4 py-3 w-32">
+                                                <ProgressBar value={scan.progress} status={scan.status} />
+                                            </td>
+                                            <td className="px-4 py-3 text-netrix-muted text-xs whitespace-nowrap">
+                                                {scan.started_at ? formatDateIST(scan.started_at) : '—'}
+                                            </td>
+                                            <td className="px-4 py-3">
+                                                <div className="flex items-center gap-1">
+                                                    {/* Expand / collapse detail */}
                                                     <button
-                                                        onClick={() => setStopTarget(scan)}
-                                                        title="Force stop"
-                                                        className="p-1.5 rounded-lg text-netrix-muted hover:text-blue-400 hover:bg-blue-400/10 transition-all"
+                                                        onClick={() => toggleDetail(scan)}
+                                                        title={isExpanded ? 'Collapse details' : 'View scan details'}
+                                                        className={`p-1.5 rounded-lg transition-all ${isExpanded ? 'text-netrix-accent bg-netrix-accent/10' : 'text-netrix-muted hover:text-netrix-accent hover:bg-netrix-accent/10'}`}
                                                     >
-                                                        <StopCircle className="w-4 h-4" />
+                                                        {isExpanded ? <ChevronUp className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                                                     </button>
-                                                )}
-                                                {/* Delete */}
-                                                <button
-                                                    onClick={() => setDeleteTarget(scan)}
-                                                    title="Delete scan"
-                                                    className="p-1.5 rounded-lg text-netrix-muted hover:text-red-400 hover:bg-red-400/10 transition-all"
-                                                >
-                                                    <Trash2 className="w-4 h-4" />
-                                                </button>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                ))}
+                                                    {/* Stop — only for running/pending */}
+                                                    {(scan.status === 'running' || scan.status === 'pending') && (
+                                                        <button
+                                                            onClick={() => setStopTarget(scan)}
+                                                            title="Force stop"
+                                                            className="p-1.5 rounded-lg text-netrix-muted hover:text-blue-400 hover:bg-blue-400/10 transition-all"
+                                                        >
+                                                            <StopCircle className="w-4 h-4" />
+                                                        </button>
+                                                    )}
+                                                    {/* Delete */}
+                                                    <button
+                                                        onClick={() => setDeleteTarget(scan)}
+                                                        title="Delete scan"
+                                                        className="p-1.5 rounded-lg text-netrix-muted hover:text-red-400 hover:bg-red-400/10 transition-all"
+                                                    >
+                                                        <Trash2 className="w-4 h-4" />
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+
+                                        {/* ── Inline detail row ── */}
+                                        {isExpanded && (
+                                            <tr key={`${scan.id}-detail`} className="bg-netrix-bg/40 border-l-2 border-l-netrix-accent">
+                                                <td colSpan={8} className="px-6 py-5">
+                                                    {cache?.loading && (
+                                                        <div className="flex items-center gap-2 text-netrix-muted text-sm py-4">
+                                                            <RefreshCw className="w-4 h-4 animate-spin" /> Loading details…
+                                                        </div>
+                                                    )}
+                                                    {cache?.error && (
+                                                        <div className="flex items-center gap-2 text-red-400 text-sm py-2">
+                                                            <AlertTriangle className="w-4 h-4" />{cache.error}
+                                                        </div>
+                                                    )}
+                                                    {cache?.data && (
+                                                        <div className="space-y-4">
+                                                            {/* Summary stats */}
+                                                            <div className="flex items-center gap-6 text-sm">
+                                                                <span className="flex items-center gap-1.5 text-netrix-muted">
+                                                                    <Server className="w-3.5 h-3.5" />
+                                                                    <span className="font-semibold text-netrix-text">{cache.data.total_hosts}</span> hosts
+                                                                </span>
+                                                                <span className="flex items-center gap-1.5 text-netrix-muted">
+                                                                    <Globe className="w-3.5 h-3.5" />
+                                                                    <span className="font-semibold text-netrix-text">{cache.data.total_ports}</span> open ports
+                                                                </span>
+                                                                <span className="flex items-center gap-1.5 text-netrix-muted">
+                                                                    <Shield className="w-3.5 h-3.5" />
+                                                                    <span className="font-semibold text-netrix-text">{cache.data.total_vulnerabilities}</span> vulnerabilities
+                                                                </span>
+                                                            </div>
+
+                                                            {/* Host cards */}
+                                                            {cache.data.hosts.length === 0 ? (
+                                                                <p className="text-netrix-muted text-sm">No hosts discovered yet.</p>
+                                                            ) : (
+                                                                <div className="space-y-3">
+                                                                    {cache.data.hosts.map(host => (
+                                                                        <HostCard key={host.id} host={host} />
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        )}
+                                        </>
+                                    )
+                                })}
                             </tbody>
                         </table>
                     </div>
@@ -513,6 +729,7 @@ export default function AdminScans() {
                     onCancel={() => setStopTarget(null)}
                 />
             )}
+
         </Layout>
     )
 }

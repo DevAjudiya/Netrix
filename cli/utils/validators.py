@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/utils/validators.py
 # Purpose: Input validation for targets, IPs, CIDRs, domains.

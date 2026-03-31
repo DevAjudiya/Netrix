@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/commands/dashboard.py
 # Purpose: Dashboard command — quick stats overview.

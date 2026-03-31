@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 // Shared IST date formatter — all timestamps displayed in Indian Standard Time (UTC+5:30)
 
 // The backend returns ISO strings without a timezone suffix (e.g. "2026-03-19T04:26:09").

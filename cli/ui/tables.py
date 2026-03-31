@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/ui/tables.py
 # Purpose: Rich table builders for hosts, ports, vulns, scans, reports.

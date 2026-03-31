@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/utils/display.py
 # Purpose: Rich UI helper functions — banner, panels,

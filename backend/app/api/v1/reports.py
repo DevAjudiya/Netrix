@@ -230,10 +230,14 @@ async def download_report(
         report.report_name, current_user.username,
     )
 
+    # Ensure the download filename always has the correct extension
+    ext = f".{report.format}"
+    download_name = report.report_name if report.report_name.lower().endswith(ext) else f"{report.report_name}{ext}"
+
     return FileResponse(
         path=report.file_path,
         media_type=media_type,
-        filename=report.report_name,
+        filename=download_name,
     )
 
 

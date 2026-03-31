@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useState, useEffect, Fragment } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { scansAPI, hostsAPI, vulnsAPI, reportsAPI } from '../services/api'
@@ -29,6 +30,7 @@ export default function ScanResults() {
     const [sortField, setSortField] = useState('ip_address')
     const [sortDir, setSortDir] = useState('asc')
     const [generating, setGenerating] = useState(false)
+    const [selectedVuln, setSelectedVuln] = useState(null)
 
     useEffect(() => {
         loadScanResults()
@@ -281,22 +283,23 @@ export default function ScanResults() {
                                                                                 <th>Port</th>
                                                                                 <th>Protocol</th>
                                                                                 <th>Service</th>
-                                                                                <th>Product</th>
-                                                                                <th>Version</th>
+                                                                                <th>Product / Version</th>
                                                                                 <th>State</th>
                                                                             </tr>
                                                                         </thead>
                                                                         <tbody>
-                                                                            {host.ports.map(port => (
+                                                                            {host.ports.map(port => {
+                                                                                const sv = [port.product, port.version, port.extra_info].filter(Boolean).join(' ') || '—'
+                                                                                return (
                                                                                 <tr key={port.id || port.port_number}>
                                                                                     <td>{port.port_number || port.port}</td>
                                                                                     <td>{port.protocol || 'tcp'}</td>
                                                                                     <td>{port.service_name || port.service || 'unknown'}</td>
-                                                                                    <td>{port.product || '—'}</td>
-                                                                                    <td>{port.version || '—'}</td>
+                                                                                    <td>{sv}</td>
                                                                                     <td>{port.state || 'open'}</td>
                                                                                 </tr>
-                                                                            ))}
+                                                                                )
+                                                                            })}
                                                                         </tbody>
                                                                     </table>
                                                                 ) : (
@@ -335,9 +338,9 @@ export default function ScanResults() {
                                     </thead>
                                     <tbody>
                                         {vulns.map((vuln, i) => (
-                                            <tr key={i}>
+                                            <tr key={i} className="cursor-pointer hover:bg-netrix-accent/5" onClick={() => setSelectedVuln(vuln)}>
                                                 <td>
-                                                    <span className="font-mono text-xs font-medium text-netrix-accent">
+                                                    <span className="font-mono text-xs font-medium text-netrix-accent hover:underline">
                                                         {vuln.cve_id || '—'}
                                                     </span>
                                                 </td>
@@ -377,12 +380,17 @@ export default function ScanResults() {
                                             <th>Protocol</th>
                                             <th>State</th>
                                             <th>Service</th>
-                                            <th>Version</th>
+                                            <th>Product / Version</th>
                                             <th>Host</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {ports.map((port, i) => (
+                                        {ports.map((port, i) => {
+                                            const product = port.product || ''
+                                            const version = port.version || ''
+                                            const extraInfo = port.extra_info || ''
+                                            const serviceVersion = [product, version, extraInfo].filter(Boolean).join(' ') || '—'
+                                            return (
                                             <tr key={i}>
                                                 <td>
                                                     <span className="font-mono font-semibold text-netrix-accent">
@@ -399,10 +407,11 @@ export default function ScanResults() {
                                                     </span>
                                                 </td>
                                                 <td className="text-netrix-text">{port.service_name || port.service || '—'}</td>
-                                                <td className="text-netrix-muted text-xs">{port.service_version || port.version || '—'}</td>
+                                                <td className="text-netrix-muted">{serviceVersion}</td>
                                                 <td className="font-mono text-xs text-netrix-muted">{port.host_ip || port.ip_address || '—'}</td>
                                             </tr>
-                                        ))}
+                                            )
+                                        })}
                                     </tbody>
                                 </table>
                             ) : (
@@ -415,6 +424,66 @@ export default function ScanResults() {
                     )}
                 </div>
             </div>
+
+            {/* CVE Detail Modal */}
+            {selectedVuln && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+                    onClick={() => setSelectedVuln(null)}
+                >
+                    <div
+                        className="glass-card w-full max-w-lg p-6 relative animate-fade-in"
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <button
+                            onClick={() => setSelectedVuln(null)}
+                            className="absolute top-4 right-4 text-netrix-muted hover:text-netrix-text transition-colors"
+                        >
+                            ✕
+                        </button>
+                        <h2 className="text-xl font-bold font-mono text-netrix-text mb-2">
+                            {selectedVuln.cve_id}
+                        </h2>
+                        <div className="mb-4">
+                            <VulnBadge severity={selectedVuln.severity} />
+                        </div>
+                        <div className="mb-4">
+                            <p className="text-xs uppercase tracking-widest text-netrix-muted mb-1">CVSS Score</p>
+                            <p className="text-2xl font-bold text-netrix-accent font-mono">{selectedVuln.cvss_score ?? '—'}</p>
+                        </div>
+                        <div className="mb-4">
+                            <p className="text-xs uppercase tracking-widest text-netrix-muted mb-1">Description</p>
+                            <p className="text-sm text-netrix-text leading-relaxed">{selectedVuln.description || '—'}</p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4 mb-4">
+                            <div>
+                                <p className="text-xs uppercase tracking-widest text-netrix-muted mb-1">Affected Service</p>
+                                <p className="text-sm text-netrix-text">{selectedVuln.service || selectedVuln.affected_service || '—'}</p>
+                            </div>
+                            <div>
+                                <p className="text-xs uppercase tracking-widest text-netrix-muted mb-1">Host</p>
+                                <p className="text-sm font-mono text-netrix-text">{selectedVuln.host_ip || selectedVuln.ip_address || '—'}</p>
+                            </div>
+                        </div>
+                        {selectedVuln.remediation && (
+                            <div className="mb-4">
+                                <p className="text-xs uppercase tracking-widest text-netrix-muted mb-1">Remediation</p>
+                                <p className="text-sm text-netrix-text leading-relaxed">{selectedVuln.remediation}</p>
+                            </div>
+                        )}
+                        {selectedVuln.cve_id && (
+                            <a
+                                href={`https://nvd.nist.gov/vuln/detail/${selectedVuln.cve_id}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-2 text-sm text-netrix-accent hover:underline mt-1"
+                            >
+                                <Globe className="w-4 h-4" /> View on NVD
+                            </a>
+                        )}
+                    </div>
+                </div>
+            )}
         </Layout>
     )
 }

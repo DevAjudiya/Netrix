@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/utils/progress.py
 # Purpose: Progress tracking utilities — live scan progress

@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/ui/prompts.py
 # Purpose: All InquirerPy interactive menus, wizards, and prompts.

@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/ui/banners.py
 # Purpose: ASCII art banner and welcome screen.
@@ -26,7 +27,8 @@ def show_banner() -> None:
             Text.from_markup(
                 f"[bold cyan]{BANNER_ART}[/bold cyan]\n"
                 "[bold white]  Network Scanning & Vulnerability Assessment Platform[/bold white]\n"
-                "[dim]  Version 1.0.0  •  Powered by Nmap + NVD CVE Engine[/dim]"
+                "[dim]  Version 1.0.0  •  Powered by Nmap + NVD CVE Engine[/dim]\n"
+                "[dim]  © 2026 @DevAjudiya. All rights reserved.[/dim]"
             ),
             border_style="cyan",
             padding=(0, 2),

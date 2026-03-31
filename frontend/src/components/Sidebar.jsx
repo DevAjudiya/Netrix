@@ -1,8 +1,9 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useSelector } from 'react-redux'
 import {
-    LayoutDashboard, Plus, History, Bug, FileText,
+    LayoutDashboard, Plus, History, Bug, FileText, Settings,
     ChevronLeft, ChevronRight, ChevronDown, Zap, Users, ScanLine, ClipboardList, HeartPulse, ShieldCheck
 } from 'lucide-react'
 
@@ -12,6 +13,7 @@ const navItems = [
     { path: '/history', icon: History, label: 'Scan History' },
     { path: '/vulnerabilities', icon: Bug, label: 'Vulnerabilities' },
     { path: '/reports', icon: FileText, label: 'Reports' },
+    { path: '/settings', icon: Settings, label: 'Settings' },
 ]
 
 const adminNavItems = [

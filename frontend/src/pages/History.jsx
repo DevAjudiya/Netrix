@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { scansAPI } from '../services/api'

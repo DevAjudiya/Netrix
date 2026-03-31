@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/commands/config_cmd.py
 # Purpose: Config command — view and manage CLI settings.

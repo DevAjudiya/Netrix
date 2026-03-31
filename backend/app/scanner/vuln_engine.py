@@ -64,8 +64,10 @@ class NVDRateLimiter:
             self._timestamps.append(time.time())
 
 
-# Module-level singleton — shared across all threads and CVEEngine instances
-_nvd_limiter = NVDRateLimiter()
+# Module-level singleton — shared across all threads and CVEEngine instances.
+# Default: 4 req/30s (NVD anonymous limit is 5/30s — keep 1 buffer).
+# Upgraded to 45/30s in CVEEngine.__init__ when an API key is configured.
+_nvd_limiter = NVDRateLimiter(max_requests=4, window=30.0)
 
 
 # ─────────────────────────────────────────
@@ -148,6 +150,8 @@ class CVEEngine:
         self.session.headers.update({"User-Agent": "Netrix/1.0"})
         if self.settings.NVD_API_KEY:
             self.session.headers["apiKey"] = self.settings.NVD_API_KEY
+            # With an API key NVD allows 50 req/30s — use 45 as safe limit
+            _nvd_limiter.max_requests = 45
         self._offline_db: Dict[str, Dict] = {}
         self.load_offline_database()
         logger.info("[NETRIX] CVE Engine initialized")
@@ -534,10 +538,14 @@ class CVEEngine:
         name_lower = service_name.lower().strip()
         version_lower = version.lower().strip()
         lookup_key = f"{name_lower} {version_lower}".strip()
+        # First meaningful word of product name (e.g. "apache" from "apache httpd")
+        name_first = name_lower.split()[0] if name_lower else ""
+        lookup_short = f"{name_first} {version_lower}".strip() if name_first and name_first != name_lower else ""
 
         # 1. Well-known vulnerable services
         for key, cve_ids in WELL_KNOWN_VULNERABLE_SERVICES.items():
-            if key == lookup_key or key == name_lower:
+            if key in (lookup_key, lookup_short, name_lower, name_first) or \
+               name_lower.startswith(key) or (name_first and name_first == key.split()[0] and version_lower and version_lower[:3] in key):
                 for cid in cve_ids:
                     if cid not in seen_ids:
                         detail = self._lookup_cve(cid)
@@ -545,23 +553,31 @@ class CVEEngine:
                             results.append(detail)
                             seen_ids.add(cid)
 
-        # 2. Offline DB fuzzy match
+        # 2. Offline DB fuzzy match — also match on first word of product name
         for cve_id, cve_data in self._offline_db.items():
             if cve_id in seen_ids:
                 continue
             affected = cve_data.get("affected", [])
             desc_lower = cve_data.get("description", "").lower()
+            matched = False
             for af in affected:
-                if name_lower in af.lower() or lookup_key in af.lower():
-                    detail = self._offline_to_cve_detail(cve_id, cve_data)
-                    results.append(detail)
-                    seen_ids.add(cve_id)
+                af_lower = af.lower()
+                if name_lower in af_lower or lookup_key in af_lower:
+                    matched = True
                     break
-            else:
-                if lookup_key and lookup_key in desc_lower:
-                    detail = self._offline_to_cve_detail(cve_id, cve_data)
-                    results.append(detail)
-                    seen_ids.add(cve_id)
+                # Partial: first word of product matches affected, and version matches
+                if name_first and name_first in af_lower:
+                    if not version_lower or version_lower in af_lower or version_lower[:3] in af_lower:
+                        matched = True
+                        break
+            if not matched and lookup_key and lookup_key in desc_lower:
+                matched = True
+            if not matched and name_first and version_lower and name_first in desc_lower and version_lower[:3] in desc_lower:
+                matched = True
+            if matched:
+                detail = self._offline_to_cve_detail(cve_id, cve_data)
+                results.append(detail)
+                seen_ids.add(cve_id)
 
         # 3. CPE-based NVD search
         if cpe:

@@ -152,10 +152,15 @@ class ReportService:
         # 5. Save DB record
         file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
 
+        # Always store report_name with the correct extension
+        base_name = report_data.report_name or filename
+        ext = f".{fmt}"
+        stored_name = base_name if base_name.lower().endswith(ext) else f"{base_name}{ext}"
+
         report = Report(
             scan_id=scan.id,
             user_id=user_id,
-            report_name=report_data.report_name or filename,
+            report_name=stored_name,
             format=fmt,
             file_path=os.path.abspath(file_path),
             file_size=file_size,

@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useState, useEffect } from 'react'
 import { useDispatch } from 'react-redux'
 import { setUser, logout } from '../store'
@@ -38,6 +39,11 @@ export default function Layout({ children }) {
                 <div className="p-4 lg:p-6 max-w-[1600px] mx-auto">
                     {children}
                 </div>
+                <footer className={`px-4 lg:px-6 pb-4 transition-all duration-300 ${sidebarCollapsed ? 'lg:pl-[72px]' : 'lg:pl-60'}`}>
+                    <p className="text-center text-netrix-muted/30 text-xs">
+                        &copy; 2026 @DevAjudiya. All rights reserved.
+                    </p>
+                </footer>
             </main>
         </div>
     )

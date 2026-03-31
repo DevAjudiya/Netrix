@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { adminAPI } from '../services/api'
 import Layout from '../components/Layout'

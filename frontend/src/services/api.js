@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import axios from 'axios'
 
 const API_BASE = '/api/v1'
@@ -16,7 +17,9 @@ api.interceptors.request.use(config => {
 api.interceptors.response.use(
   response => response,
   error => {
-    if (error.response?.status === 401) {
+    const isAuthEndpoint = error.config?.url?.includes('/auth/login') ||
+                           error.config?.url?.includes('/auth/register')
+    if (error.response?.status === 401 && !isAuthEndpoint) {
       localStorage.removeItem('netrix_token')
       window.location.href = '/login'
     }
@@ -106,6 +109,7 @@ export const adminAPI = {
   deleteUser: (userId) => api.delete(`/admin/users/${userId}`),
   resetPassword: (userId) => api.post(`/admin/users/${userId}/reset-password`),
   listScans: (params) => api.get('/admin/scans', { params }),
+  getScanDetails: (scanId) => api.get(`/scans/${scanId}/results`),
   deleteScan: (scanId) => api.delete(`/admin/scans/${scanId}`),
   stopScan: (scanId) => api.post(`/admin/scans/${scanId}/stop`),
   listLogs: (params) => api.get('/admin/logs', { params }),
@@ -115,6 +119,18 @@ export const adminAPI = {
   cveSync: () => api.post('/admin/cve/sync'),
   cveRematch: () => api.post('/admin/cve/rematch'),
   cveList: (params) => api.get('/admin/cve/list', { params })
+}
+
+export const settingsAPI = {
+  changePassword: (currentPassword, newPassword) =>
+    api.put('/users/me/password', { current_password: currentPassword, new_password: newPassword }),
+  changeEmail: (newEmail, password) =>
+    api.put('/users/me/email', { new_email: newEmail, password }),
+  getApiKey: () => api.get('/users/me/api-key'),
+  generateApiKey: () => api.post('/users/me/api-key'),
+  revokeApiKey: () => api.delete('/users/me/api-key'),
+  deleteAllScans: () => api.delete('/users/me/scans'),
+  deleteAccount: (password) => api.delete('/users/me', { data: { password } }),
 }
 
 export default api

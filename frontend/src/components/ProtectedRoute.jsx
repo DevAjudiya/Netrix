@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useSelector } from 'react-redux'
 import { Navigate } from 'react-router-dom'
 

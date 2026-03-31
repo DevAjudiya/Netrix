@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/utils/formatters.py
 # Purpose: Formatters for dates, file sizes, durations, severity.

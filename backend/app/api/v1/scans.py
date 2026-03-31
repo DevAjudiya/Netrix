@@ -357,19 +357,31 @@ async def get_scan_status(
     if not scan:
         raise HTTPException(404, "Not found")
 
+    # Count real vuln totals from DB (service-matched CVEs are not stored
+    # in scan.total_vulnerabilities, so we query Vulnerability directly)
+    total_vulns = db.query(Vulnerability).filter(
+        Vulnerability.scan_id == scan.id
+    ).count()
+    critical_vulns = db.query(Vulnerability).filter(
+        Vulnerability.scan_id == scan.id,
+        Vulnerability.severity == "critical",
+    ).count()
+    total_ports = db.query(Port).join(Host).filter(
+        Host.scan_id == scan.id
+    ).count()
+
     return {
         "scan_id": scan.scan_id,
         "status": scan.status,
         "progress": scan.progress or 0,
-        "started_at": str(scan.started_at)
-        if scan.started_at
-        else None,
-        "completed_at": str(scan.completed_at)
-        if scan.completed_at
-        else None,
+        "started_at": str(scan.started_at) if scan.started_at else None,
+        "completed_at": str(scan.completed_at) if scan.completed_at else None,
         "error_message": scan.error_message,
         "total_hosts": scan.total_hosts or 0,
         "hosts_up": scan.hosts_up or 0,
+        "total_vulns": total_vulns,
+        "total_ports": total_ports,
+        "critical_count": critical_vulns,
     }
 
 
@@ -605,17 +617,54 @@ async def scan_websocket(
 
             # Check if scan is still active
             if scan_id not in scan_manager.active_scans:
-                # Scan may have finished before WS connected
+                # Scan may have finished before WS connected, or this is a
+                # different worker process — check the actual DB status.
                 live = await scan_manager.get_scan_status(scan_id)
                 scan_status_val = live.get("status", "unknown")
 
-                if scan_status_val in ("completed", "failed"):
+                if scan_status_val in ("pending", "running"):
+                    # Scan is still in progress per DB — keep waiting
+                    pass
+                elif scan_status_val in ("completed", "failed"):
+                    # Fetch real totals from DB instead of sending zeros
+                    total_hosts = 0
+                    try:
+                        from app.database.session import SessionLocal
+                        from app.models.scan import Scan as ScanModel
+                        from app.models.host import Host as HostModel
+                        from app.models.port import Port as PortModel
+                        from app.models.vulnerability import Vulnerability as VulnModel
+                        _db = SessionLocal()
+                        try:
+                            _scan = _db.query(ScanModel).filter(
+                                ScanModel.scan_id == scan_id
+                            ).first()
+                            if _scan:
+                                total_hosts = _scan.hosts_up or 0
+                                total_ports = (
+                                    _db.query(PortModel)
+                                    .join(HostModel, PortModel.host_id == HostModel.id)
+                                    .filter(HostModel.scan_id == _scan.id)
+                                    .count()
+                                )
+                                total_vulns = (
+                                    _db.query(VulnModel)
+                                    .filter(VulnModel.scan_id == _scan.id)
+                                    .count()
+                                )
+                            else:
+                                total_ports = total_vulns = 0
+                        finally:
+                            _db.close()
+                    except Exception:
+                        total_ports = total_vulns = 0
+
                     await websocket.send_json({
                         "event": "scan_complete",
                         "progress": 100,
-                        "total_hosts": 0,
-                        "total_ports": 0,
-                        "total_vulns": 0,
+                        "total_hosts": total_hosts,
+                        "total_ports": total_ports,
+                        "total_vulns": total_vulns,
                         "critical_count": 0,
                         "duration": "N/A",
                         "message": f"✅ Scan {scan_status_val}.",

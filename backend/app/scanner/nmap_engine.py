@@ -9,6 +9,7 @@ import json
 import logging
 import random
 import string
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -44,29 +45,122 @@ CRITICAL_PORTS: List[int] = [
 
 SCAN_PROFILES = {
     "quick": {
-        "args": "-sT -sV -O -Pn -T4 -F --open",
-        "time": "1-3 min"
+        "args": "-sS -sV -T4 -F --open --max-retries 1 --min-rate 1000",
+        "time": "30s-1 min"
     },
     "stealth": {
-        "args": "-sT -sV -Pn -T3 --open -p 1-1000",
-        "time": "5-10 min"
+        "args": "-sS -sV -Pn -T3 --open -p 1-1000 --min-rate 300",
+        "time": "2-5 min"
     },
     "full": {
-        "args": "-sT -sV -O -Pn -T4 --open -p 1-65535",
-        "time": "15-30 min"
+        "args": "-sS -sV -O -Pn -T4 --open -p 1-65535 --min-rate 1000",
+        "time": "5-15 min"
     },
     "aggressive": {
-        "args": "-sT -sV -sC -O -Pn -T4 --open -p 1-10000",
-        "time": "10-20 min"
+        "args": "-sS -sV -sC -O -Pn -T4 --open -p 1-10000 --min-rate 1000",
+        "time": "3-8 min"
     },
     "vulnerability": {
-        "args": "-sT -sV -Pn -T4 --open -p 1-1000 "
-                "--script=vuln,banner,http-headers,"
-                "http-title,ftp-anon,ssh-hostkey,"
-                "ssl-heartbleed,smb-vuln-ms17-010",
-        "time": "20-40 min"
+        # Phase 1 (port discovery) + Phase 2 (scripts on open ports only)
+        # Actual args are built dynamically in _run_vulnerability_scan().
+        "args": "",
+        "time": "10-20 min"
     }
 }
+
+# Estimated nmap execution duration (seconds) per scan type.
+# Used by the progress ticker to spread simulated progress across the run.
+SCAN_ESTIMATED_SECONDS = {
+    "quick":         45,
+    "stealth":       180,
+    "full":          600,
+    "aggressive":    300,
+    "vulnerability": 600,
+}
+
+# Targeted NSE scripts only — no heavy "vuln" category (offline DB covers CVEs).
+# Each script has a known fast execution time on remote hosts.
+_VULN_SCRIPTS = (
+    "banner,http-headers,http-title,http-server-header,ftp-anon,ssh-hostkey,"
+    "ssl-heartbleed,ssl-poodle,smb-vuln-ms17-010,smb-vuln-ms08-067,http-shellshock,"
+    "dns-recursion,smtp-open-relay"
+)
+
+
+def _cvss_to_severity(cvss: float) -> str:
+    """Map a CVSS v2/v3 score to a severity label."""
+    if cvss >= 9.0:
+        return "critical"
+    if cvss >= 7.0:
+        return "high"
+    if cvss >= 4.0:
+        return "medium"
+    if cvss > 0.0:
+        return "low"
+    return "info"
+
+
+def _progress_ticker(
+    scan_id: str,
+    start_pct: int,
+    end_pct: int,
+    estimated_secs: int,
+    callback: Callable,
+    stop_event: threading.Event,
+    messages: Optional[List[str]] = None,
+) -> None:
+    """
+    Background thread that ticks progress from *start_pct* toward *end_pct*,
+    firing *callback* every TICK_INTERVAL seconds.
+
+    Phase 1: Fills start_pct → end_pct over DISPLAY_SECS seconds.
+    Phase 2: Once capped, keeps heartbeating every TICK_INTERVAL seconds with
+             a slowly creeping value (0.2% per tick) up to end_pct-1, so the
+             UI never appears frozen during long-running scans.
+    """
+    TICK_INTERVAL = 3       # fire every 3 seconds — user sees regular updates
+    # Spread start_pct→end_pct over 90% of the estimated scan time so the bar
+    # fills gradually rather than hitting the cap in 60 s and freezing there.
+    DISPLAY_SECS  = max(60, int(estimated_secs * 0.9))
+
+    total_ticks = max(1, DISPLAY_SECS // TICK_INTERVAL)
+    step = (end_pct - start_pct) / total_ticks
+    HEARTBEAT_STEP = 0.2   # slow creep during phase 2 so bar isn't truly frozen
+
+    current = float(start_pct)
+    tick = 0
+
+    default_messages = [
+        "Probing open ports…",
+        "Sending SYN packets…",
+        "Waiting for host responses…",
+        "Fingerprinting services…",
+        "Analyzing response times…",
+        "Scanning port ranges…",
+        "Collecting banner data…",
+        "Running detection scripts…",
+        "Cross-referencing services…",
+        "Finalizing port states…",
+    ]
+    msgs = messages or default_messages
+
+    while not stop_event.is_set():
+        stop_event.wait(TICK_INTERVAL)
+        if stop_event.is_set():
+            break
+        if current < end_pct - 1:
+            # Phase 1: fast fill
+            current = min(current + step, end_pct - 1)
+        else:
+            # Phase 2: heartbeat — keep the bar visibly alive
+            current = min(current + HEARTBEAT_STEP, end_pct - 1)
+        pct = int(current)
+        msg = msgs[tick % len(msgs)]
+        try:
+            callback(scan_id, pct, "running", f"🔍 {msg} ({pct}%)")
+        except Exception:
+            pass
+        tick += 1
 
 
 # ─────────────────────────────────────────
@@ -87,6 +181,7 @@ class ServiceInfo:
     nse_scripts: Dict[str, str] = field(default_factory=dict)
     is_critical_port: bool = False
     is_vulnerable: bool = False
+    cve_data: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -272,6 +367,17 @@ class NmapEngine:
 
         started_at = datetime.now(timezone.utc)
 
+        # ── Vulnerability scan: two-phase (port discovery → script scan) ──
+        if scan_type == ScanType.VULNERABILITY and not custom_args:
+            return self._run_vulnerability_scan(
+                target=target,
+                scan_id=scan_id,
+                custom_ports=custom_ports,
+                callback=callback,
+                event_callback=event_callback,
+                started_at=started_at,
+            )
+
         # ── Determine nmap arguments ─────────────────────────────
         if scan_type == ScanType.CUSTOM:
             args = custom_args if custom_args else "-sV -T4 --open"
@@ -297,9 +403,23 @@ class NmapEngine:
         # ── Execute nmap ─────────────────────────────────────────
         self._update_progress(
             scan_id, 10, "running",
-            "Nmap scan in progress — waiting for results",
+            "🚀 Nmap scan launched — probing target…",
             callback,
         )
+
+        # Start a background ticker so the frontend sees smooth progress
+        # while nmap blocks (10 % → 65 % over the expected scan duration).
+        estimated = SCAN_ESTIMATED_SECONDS.get(scan_type.value, 300)
+        _stop_ticker = threading.Event()
+        if callback:
+            _ticker_thread = threading.Thread(
+                target=_progress_ticker,
+                args=(scan_id, 10, 65, estimated, callback, _stop_ticker),
+                daemon=True,
+            )
+            _ticker_thread.start()
+        else:
+            _ticker_thread = None
 
         try:
             # Check if nmap installed
@@ -308,16 +428,17 @@ class NmapEngine:
 
             # Set timeout based on scan type
             timeouts = {
-                "quick": 300,       # 5 min
-                "stealth": 600,     # 10 min
-                "full": 1800,       # 30 min
-                "aggressive": 1200, # 20 min
-                "vulnerability": 2400 # 40 min
+                "quick": 60,        # 1 min per host
+                "stealth": 300,     # 5 min
+                "full": 900,        # 15 min
+                "aggressive": 600,  # 10 min
+                "vulnerability": 3600 # 60 min
             }
-            timeout_arg = f" --host-timeout {timeouts.get(scan_type.value, 1800)}s"
+            timeout_arg = f" --host-timeout {timeouts.get(scan_type.value, 900)}s"
 
             self.nm.scan(hosts=target, arguments=args + timeout_arg)
         except nmap.PortScannerError as e:
+            _stop_ticker.set()
             error = str(e)
             if "root" in error.lower() or \
                "admin" in error.lower():
@@ -326,13 +447,18 @@ class NmapEngine:
                     "Run as Administrator."
                 )
             raise Exception(f"Nmap error: {e}")
-            
+
         except Exception as e:
+            _stop_ticker.set()
             raise Exception(f"Scan failed: {e}")
+
+        finally:
+            # Always stop the ticker when nmap exits (success or failure)
+            _stop_ticker.set()
 
         self._update_progress(
             scan_id, 70, "running",
-            "Nmap scan complete — parsing results",
+            "✅ Nmap finished — parsing results…",
             callback,
         )
 
@@ -407,6 +533,333 @@ class NmapEngine:
         return summary
 
     # ─────────────────────────────────────
+    # Two-phase vulnerability scan
+    # ─────────────────────────────────────
+    def _run_vulnerability_scan(
+        self,
+        target: str,
+        scan_id: str,
+        custom_ports: str,
+        callback: Optional[Callable],
+        event_callback: Optional[Callable],
+        started_at: datetime,
+    ) -> "ScanSummary":
+        """
+        Phase 1 — fast SYN scan to discover open ports.
+        Phase 2 — deep vuln scripts only on the discovered ports.
+
+        This is dramatically faster than running scripts against all 65 535
+        ports: a typical web server with 3 open ports finishes in ~3 minutes
+        instead of 45–60.
+        """
+        # ── Phase 1: port discovery ──────────────────────────────
+        # Phase 1: use --top-ports 1000 by default (covers 90%+ of real services
+        # while sending 65x fewer packets than -p-, avoiding IDS rate-limit blocks).
+        # If the user specified custom_ports, honour that instead.
+        if custom_ports:
+            port_range = custom_ports
+            port_arg = f"-p {port_range}"
+        else:
+            port_range = ""
+            port_arg = "--top-ports 1000"
+        phase1_args = (
+            f"-sS -T4 --open {port_arg} --min-rate 1000 -Pn --host-timeout 300s"
+        )
+
+        self._update_progress(
+            scan_id, 5, "running",
+            f"Phase 1/2 — fast port discovery on {target}…",
+            callback,
+        )
+
+        _stop_p1 = threading.Event()
+        if callback:
+            p1_msgs = [
+                "Sending SYN probes…", "Waiting for host responses…",
+                "Filtering open ports…", "Enumerating port states…",
+                "Mapping port ranges…",
+            ]
+            threading.Thread(
+                target=_progress_ticker,
+                args=(scan_id, 5, 38, 120, callback, _stop_p1, p1_msgs),
+                daemon=True,
+            ).start()
+
+        nm_disc = nmap.PortScanner()
+        try:
+            nm_disc.scan(hosts=target, arguments=phase1_args)
+        except nmap.PortScannerError as e:
+            _stop_p1.set()
+            err = str(e)
+            if "root" in err.lower() or "admin" in err.lower():
+                raise Exception("Need root/admin rights for SYN scan.")
+            raise Exception(f"Port discovery failed: {e}")
+        except Exception as e:
+            _stop_p1.set()
+            raise Exception(f"Port discovery failed: {e}")
+        finally:
+            _stop_p1.set()
+
+        # Collect open ports across all discovered hosts
+        open_ports: List[int] = []
+        for h in nm_disc.all_hosts():
+            for proto in ("tcp", "udp"):
+                try:
+                    for p, data in nm_disc[h].get(proto, {}).items():
+                        if data.get("state") == "open":
+                            open_ports.append(int(p))
+                except Exception:
+                    pass
+        open_ports = sorted(set(open_ports))
+
+        port_count = len(open_ports)
+        logger.info(
+            "[NETRIX] %s | Phase 1 complete — %d open port(s): %s",
+            datetime.now(timezone.utc).isoformat(),
+            port_count,
+            ",".join(str(p) for p in open_ports[:20]),
+        )
+
+        if event_callback:
+            event_callback({
+                "event": "progress",
+                "progress": 40,
+                "ports_found": port_count,
+                "message": (
+                    f"Phase 1 done — {port_count} open port(s) found. "
+                    "Starting vulnerability analysis on discovered ports…"
+                    if port_count else
+                    "Phase 1 done — no open ports found."
+                ),
+            })
+
+        # ── Phase 2a: version detection on open ports ────────────
+        # Run -sV separately from vuln scripts so scripts never
+        # interfere with service fingerprinting.
+        self._update_progress(
+            scan_id, 40, "running",
+            f"Phase 2a — service/version detection on {port_count} open port(s)…",
+            callback,
+        )
+
+        if open_ports:
+            ports_str = ",".join(str(p) for p in open_ports)
+            # Firewall-bypass version detection:
+            # --version-intensity 9 : max probe coverage
+            # --source-port 53      : spoof DNS source port (often allowed through firewalls)
+            # -f                    : fragment packets to evade packet inspection
+            # -O                    : OS detection
+            phase2a_args = (
+                f"-sS -sV --version-intensity 9 -O -Pn -T4 --open "
+                f"-p {ports_str} --source-port 53 -f --host-timeout 180s"
+            )
+        else:
+            ports_str = ""
+            phase2a_args = (
+                "-sS -sV --version-intensity 9 -O -Pn -T4 --open "
+                "--top-ports 1000 --source-port 53 -f --host-timeout 180s"
+            )
+
+        _stop_p2a = threading.Event()
+        if callback:
+            threading.Thread(
+                target=_progress_ticker,
+                args=(scan_id, 40, 58, max(30, port_count * 3), callback, _stop_p2a,
+                      ["Fingerprinting services…", "Reading service banners…",
+                       "Detecting OS…", "Analyzing service versions…"]),
+                daemon=True,
+            ).start()
+
+        try:
+            self.nm.scan(hosts=target, arguments=phase2a_args)
+        except Exception as e:
+            _stop_p2a.set()
+            raise Exception(f"Version scan failed: {e}")
+        finally:
+            _stop_p2a.set()
+
+        # ── Fallback: if Phase 2a returned 0 hosts but Phase 1 found hosts,
+        #    copy Phase 1 results into self.nm so we still persist host/port data.
+        p2a_hosts = self.nm.all_hosts() if self.nm else []
+        if not p2a_hosts and nm_disc.all_hosts():
+            logger.warning(
+                "[NETRIX] Phase 2a returned 0 hosts — falling back to Phase 1 "
+                "discovery results for %s", target
+            )
+            self.nm = nm_disc
+
+        # ── Retry: if hosts found but no product/version data detected,
+        #    try TCP connect + banner script with HTTP source port spoof.
+        if p2a_hosts and ports_str:
+            has_version = any(
+                self.nm[h].get(proto, {}).get(str(p), {}).get("product") or
+                self.nm[h].get(proto, {}).get(str(p), {}).get("version")
+                for h in self.nm.all_hosts()
+                for proto in ("tcp", "udp")
+                for p in (self.nm[h].get(proto) or {})
+            )
+            if not has_version:
+                logger.info(
+                    "[NETRIX] Phase 2a got no product/version — retrying with "
+                    "TCP connect + banner script for %s", target
+                )
+                nm_retry = nmap.PortScanner()
+                retry_args = (
+                    f"-sT -sV --version-intensity 9 -Pn -T4 --open "
+                    f"-p {ports_str} --source-port 80 --script=banner --host-timeout 180s"
+                )
+                try:
+                    nm_retry.scan(hosts=target, arguments=retry_args)
+                    if nm_retry.all_hosts():
+                        # Merge retry version/banner data into self.nm
+                        for h in nm_retry.all_hosts():
+                            if h not in self.nm.all_hosts():
+                                continue
+                            for proto in ("tcp", "udp"):
+                                for port_n, port_d in (nm_retry[h].get(proto) or {}).items():
+                                    existing = self.nm[h].get(proto, {}).get(port_n, {})
+                                    if not existing.get("product") and port_d.get("product"):
+                                        existing["product"] = port_d["product"]
+                                    if not existing.get("version") and port_d.get("version"):
+                                        existing["version"] = port_d["version"]
+                                    # Parse raw banner as last-resort product/version
+                                    banner = (port_d.get("script") or {}).get("banner", "")
+                                    if banner and not existing.get("product"):
+                                        parsed = self._parse_banner(banner)
+                                        if parsed:
+                                            existing["product"] = parsed["product"]
+                                            existing["version"] = parsed.get("version", "")
+                except Exception as retry_err:
+                    logger.debug("[NETRIX] Banner retry failed: %s", retry_err)
+
+        logger.info(
+            "[NETRIX] %s | Phase 2a complete — %d host(s) in self.nm",
+            datetime.now(timezone.utc).isoformat(),
+            len(self.nm.all_hosts()),
+        )
+
+        self._update_progress(
+            scan_id, 58, "running",
+            f"Phase 2b — running vulnerability scripts on {port_count} open port(s)…",
+            callback,
+        )
+
+        # ── Phase 2b: vuln scripts on same ports (separate instance) ─
+        # Use a fresh PortScanner so self.nm keeps the clean version data.
+        # After scripts finish we merge their NSE output back into self.nm.
+        nm_scripts = nmap.PortScanner()
+        estimated_p2b = max(60, port_count * 10)
+        _stop_p2b = threading.Event()
+        if callback:
+            threading.Thread(
+                target=_progress_ticker,
+                args=(scan_id, 58, 83, estimated_p2b, callback, _stop_p2b),
+                daemon=True,
+            ).start()
+
+        script_scan_ok = False
+        if open_ports:
+            try:
+                nm_scripts.scan(
+                    hosts=target,
+                    arguments=(
+                        f"-sS -Pn -T4 --open -p {ports_str} "
+                        f"--script={_VULN_SCRIPTS} "
+                        f"--script-timeout 10s --host-timeout 120s"
+                    ),
+                )
+                script_scan_ok = True
+            except Exception as script_err:
+                logger.warning(
+                    "[NETRIX] Script scan failed (non-fatal): %s", str(script_err)
+                )
+            finally:
+                _stop_p2b.set()
+        else:
+            _stop_p2b.set()
+
+        # ── Merge NSE script output into self.nm version results ──
+        if script_scan_ok:
+            for h in nm_scripts.all_hosts():
+                if h not in self.nm.all_hosts():
+                    continue
+                for proto in ("tcp", "udp"):
+                    for port, pdata in nm_scripts[h].get(proto, {}).items():
+                        script_out = pdata.get("script", {})
+                        if not script_out:
+                            continue
+                        try:
+                            self.nm[h][proto][port]["script"] = script_out
+                        except (KeyError, TypeError):
+                            pass
+
+        self._update_progress(scan_id, 85, "running", "Parsing results…", callback)
+
+        # ── Parse & build summary ────────────────────────────────
+        hosts = self._parse_results(scan_id, event_callback=event_callback)
+
+        self._update_progress(
+            scan_id, 90, "running",
+            f"Parsed {len(hosts)} host(s) — calculating risk scores",
+            callback,
+        )
+
+        completed_at = datetime.now(timezone.utc)
+        duration = (completed_at - started_at).total_seconds()
+
+        try:
+            nmap_cmd = self.nm.command_line()
+        except Exception:
+            nmap_cmd = f"nmap {phase2a_args} {target}"
+
+        try:
+            nmap_ver = self.nm.nmap_version()
+            nmap_ver_str = ".".join(str(v) for v in nmap_ver) if isinstance(nmap_ver, tuple) else str(nmap_ver)
+        except Exception:
+            nmap_ver_str = "unknown"
+
+        hosts_up = sum(1 for h in hosts if h.status == "up")
+        total_open_ports = sum(h.open_ports_count for h in hosts)
+        total_vulns = sum(len(h.vulnerabilities_found) for h in hosts)
+        critical_hosts = sum(1 for h in hosts if h.risk_level == "critical")
+        high_risk_hosts = sum(1 for h in hosts if h.risk_level == "high")
+
+        summary = ScanSummary(
+            scan_id=scan_id,
+            target=target,
+            scan_type="vulnerability",
+            scan_profile="10-20 min",
+            nmap_command=nmap_cmd,
+            nmap_version=nmap_ver_str,
+            started_at=started_at.isoformat(),
+            completed_at=completed_at.isoformat(),
+            duration_seconds=round(duration, 2),
+            total_hosts=len(hosts),
+            hosts_up=hosts_up,
+            hosts_down=len(hosts) - hosts_up,
+            hosts=hosts,
+            total_open_ports=total_open_ports,
+            total_vulnerabilities=total_vulns,
+            critical_hosts=critical_hosts,
+            high_risk_hosts=high_risk_hosts,
+            scan_args_used=phase2a_args,
+        )
+
+        self._update_progress(
+            scan_id, 100, "completed",
+            f"Scan complete — {hosts_up} host(s), {total_open_ports} port(s), {total_vulns} vuln(s)",
+            callback,
+        )
+
+        logger.info(
+            "[NETRIX] %s | Vuln scan %s complete — %d host(s), %d port(s), %d vuln(s) in %.1fs",
+            datetime.now(timezone.utc).isoformat(),
+            scan_id, len(hosts), total_open_ports, total_vulns, duration,
+        )
+
+        return summary
+
+    # ─────────────────────────────────────
     # Result parsing
     # ─────────────────────────────────────
     def _parse_results(
@@ -463,15 +916,41 @@ class NmapEngine:
                                 "message": f"🔓 Open port: {svc.port}/{svc.protocol} {svc.service_name}{product_str}",
                             })
 
-                    # Fire cve_found events for each vulnerability
+                    # Fire cve_found events — use real CVE/CVSS from services
+                    emitted: set = set()
+                    for svc in host_result.services:
+                        for cve_entry in svc.cve_data:
+                            cve_id = cve_entry["cve_id"]
+                            if cve_id in emitted:
+                                continue
+                            emitted.add(cve_id)
+                            cvss = cve_entry.get("cvss", 0.0)
+                            severity = cve_entry.get("severity", _cvss_to_severity(cvss))
+                            event_callback({
+                                "event": "cve_found",
+                                "ip": host_result.ip,
+                                "port": svc.port,
+                                "service": svc.service_name,
+                                "cve_id": cve_id,
+                                "cvss": cvss,
+                                "severity": severity,
+                                "url": cve_entry.get("url", ""),
+                                "message": (
+                                    f"⚠️ {cve_id} [CVSS {cvss}] on "
+                                    f"{host_result.ip}:{svc.port}/{svc.service_name}"
+                                ),
+                            })
+                    # Fall back for non-CVE script detections
                     for vuln_name in host_result.vulnerabilities_found:
+                        if vuln_name.startswith("CVE-") or vuln_name in emitted:
+                            continue
                         severity = self._severity_from_script(vuln_name)
                         event_callback({
                             "event": "cve_found",
                             "ip": host_result.ip,
                             "cve_id": vuln_name,
+                            "cvss": 0.0,
                             "severity": severity,
-                            "cvss": 7.5 if severity == "critical" else 5.0,
                             "message": f"⚠️ Vulnerability: {vuln_name} [{severity.upper()}] on {host_result.ip}",
                         })
 
@@ -561,10 +1040,21 @@ class NmapEngine:
         open_ports = [s for s in services if s.state == "open"]
         critical_open = [s.port for s in open_ports if s.is_critical_port]
         vulns_found = []
+        seen_cves: set = set()
         for svc in services:
-            for script_name, script_output in svc.nse_scripts.items():
-                if self._is_vulnerable_output(script_output):
-                    vulns_found.append(script_name)
+            # Prefer real CVE IDs from cve_data
+            for cve_entry in svc.cve_data:
+                cve_id = cve_entry["cve_id"]
+                if cve_id not in seen_cves:
+                    seen_cves.add(cve_id)
+                    vulns_found.append(cve_id)
+            # Fall back to script-name detection for scripts without CVE IDs
+            if not svc.cve_data:
+                for script_name, script_output in svc.nse_scripts.items():
+                    if self._is_vulnerable_output(script_output):
+                        label = f"{script_name}:{svc.port}"
+                        if label not in vulns_found:
+                            vulns_found.append(label)
 
         result = HostScanResult(
             ip=host_ip,
@@ -679,6 +1169,11 @@ class NmapEngine:
                         for output in nse_scripts.values()
                     )
 
+                    # Real CVE/CVSS extraction
+                    cve_data = self._extract_cve_cvss_from_scripts(nse_scripts)
+                    if cve_data:
+                        is_vuln = True
+
                     svc = ServiceInfo(
                         port=int(port_number),
                         protocol=protocol,
@@ -691,6 +1186,7 @@ class NmapEngine:
                         nse_scripts=nse_scripts,
                         is_critical_port=is_critical,
                         is_vulnerable=is_vuln,
+                        cve_data=cve_data,
                     )
                     services.append(svc)
 
@@ -702,6 +1198,50 @@ class NmapEngine:
 
         services.sort(key=lambda s: s.port)
         return services
+
+    # ─────────────────────────────────────
+    # Banner parser — extract product/version from raw service banners
+    # when nmap -sV cannot fingerprint the service normally.
+    # ─────────────────────────────────────
+    @staticmethod
+    def _parse_banner(banner: str) -> dict:
+        """
+        Parse a raw service banner string into product/version.
+        Handles common protocols: SSH, FTP, SMTP, HTTP, POP3, IMAP.
+        Returns dict with 'product' and optionally 'version', or {} if unknown.
+        """
+        import re as _re
+        banner = banner.strip()
+
+        patterns = [
+            # SSH: SSH-2.0-OpenSSH_8.9p1
+            (_re.compile(r'SSH-[\d.]+-(\S+?)(?:_| )([\d.]+\S*)', _re.I),
+             lambda m: {"product": m.group(1), "version": m.group(2)}),
+            # SSH no version: SSH-2.0-OpenSSH_8.9
+            (_re.compile(r'SSH-[\d.]+-(\S+)', _re.I),
+             lambda m: {"product": m.group(1)}),
+            # FTP: 220 (vsFTPd 3.0.3) or 220 ProFTPD 1.3.5
+            (_re.compile(r'220[\s-]+(?:\()?(\w+(?:FTPd?|\w+))\s+([\d.]+)', _re.I),
+             lambda m: {"product": m.group(1), "version": m.group(2)}),
+            # SMTP/POP3/IMAP: product name + version in banner
+            (_re.compile(r'(?:Postfix|Exim|Sendmail|Dovecot|Courier)\s*([\d.]*)', _re.I),
+             lambda m: {"product": m.group(0).split()[0], "version": m.group(1)}),
+            # HTTP Server header: Apache/2.4.51 or nginx/1.18.0
+            (_re.compile(r'(Apache|nginx|lighttpd|IIS|Caddy|Cherokee)/([\d.]+)', _re.I),
+             lambda m: {"product": m.group(1), "version": m.group(2)}),
+            # Generic: ProductName/Version
+            (_re.compile(r'([A-Za-z][\w-]+)/([\d.]+)', _re.I),
+             lambda m: {"product": m.group(1), "version": m.group(2)}),
+        ]
+
+        for pattern, extractor in patterns:
+            m = pattern.search(banner)
+            if m:
+                try:
+                    return extractor(m)
+                except Exception:
+                    continue
+        return {}
 
     # ─────────────────────────────────────
     # NSE script output
@@ -728,6 +1268,70 @@ class NmapEngine:
         return scripts
 
     @staticmethod
+    def _extract_cve_cvss_from_scripts(scripts: Dict[str, str]) -> List[Dict[str, Any]]:
+        """
+        Parse real CVE IDs and CVSS scores from NSE script output.
+
+        Handles two formats:
+        - vulners:     ``CVE-XXXX-XXXX  7.5  https://vulners.com/...``
+        - vuln scripts: ``IDs: CVE:CVE-XXXX-XXXX`` + ``CVSS Score: 9.3``
+        """
+        import re as _re
+        results: List[Dict[str, Any]] = []
+        seen: set = set()
+
+        for script_name, output in scripts.items():
+            if not output:
+                continue
+
+            if script_name == "vulners":
+                # vulners format: CVE-XXXX-XXXXX  7.5  https://...
+                for m in _re.finditer(
+                    r'(CVE-\d{4}-\d+)\s+([\d.]+)\s+https?://\S+',
+                    output,
+                ):
+                    cve_id = m.group(1)
+                    if cve_id in seen:
+                        continue
+                    seen.add(cve_id)
+                    try:
+                        cvss = float(m.group(2))
+                    except ValueError:
+                        cvss = 0.0
+                    results.append({
+                        "cve_id": cve_id,
+                        "cvss": cvss,
+                        "severity": _cvss_to_severity(cvss),
+                        "source": "vulners",
+                        "url": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
+                    })
+            else:
+                # vuln-script format: IDs: CVE:CVE-XXXX-XXXX  + CVSS Score: 9.3
+                cve_ids = _re.findall(r'CVE[:\s]+(CVE-\d{4}-\d+)', output)
+                cvss_m = _re.search(r'CVSS\s+(?:Score)?[:\s]+([\d.]+)', output, _re.IGNORECASE)
+                cvss = float(cvss_m.group(1)) if cvss_m else 0.0
+
+                # Also look for bare CVE references
+                if not cve_ids:
+                    cve_ids = _re.findall(r'\b(CVE-\d{4}-\d+)\b', output)
+
+                for cve_id in cve_ids:
+                    if cve_id in seen:
+                        continue
+                    seen.add(cve_id)
+                    results.append({
+                        "cve_id": cve_id,
+                        "cvss": cvss,
+                        "severity": _cvss_to_severity(cvss),
+                        "source": script_name,
+                        "url": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
+                    })
+
+        # Sort by CVSS descending
+        results.sort(key=lambda x: x["cvss"], reverse=True)
+        return results
+
+    @staticmethod
     def _is_vulnerable_output(output: str) -> bool:
         """Check whether NSE output indicates a vulnerability."""
         if not output:
@@ -738,6 +1342,16 @@ class NmapEngine:
             "STATE: VULNERABLE",
             "RISK FACTOR:",
             "EXPLOIT AVAILABLE",
+            "EXPLOITABLE",
+            "CVE-",
+            "SEVERITY: HIGH",
+            "SEVERITY: CRITICAL",
+            "SEVERITY: MEDIUM",
+            "DISCLOSURE DATE:",
+            "REFERENCES:",
+            "IDS:",
+            "DANGEROUS",
+            "BACKDOOR",
         ]
         return any(kw in upper for kw in indicators)
 
@@ -923,6 +1537,13 @@ class NmapEngine:
         from app.models.port import Port
         from app.models.scan import Scan
         from app.models.vulnerability import Vulnerability
+        from app.scanner.vuln_engine import CVEEngine as _CVEEngine
+
+        # Pre-load CVE engine once for the whole save operation
+        try:
+            _cve_engine = _CVEEngine()
+        except Exception:
+            _cve_engine = None
 
         try:
             # ── Step 1: Scan record ──────────────────────────────
@@ -1004,23 +1625,19 @@ class NmapEngine:
                     db_session.add(port)
                     db_session.flush()
 
-                    # ── Step 4: Vulnerability records ────────────
+                    # ── Step 4a: NSE-detected vulnerabilities ────────────
+                    nse_cve_ids_saved: set = set()
                     for script_name, script_output in svc.nse_scripts.items():
                         if self._is_vulnerable_output(script_output):
                             cve_id, cvss_score = self._extract_cve_from_output(
                                 script_output
                             )
                             # Enrich CVSS from offline DB when not in NSE output
-                            if cve_id and cvss_score is None:
-                                try:
-                                    from app.scanner.vuln_engine import CVEEngine as _CVEEngine
-                                    _engine = _CVEEngine()
-                                    if cve_id in _engine._offline_db:
-                                        _offline_score = _engine._offline_db[cve_id].get("cvss_score")
-                                        if _offline_score is not None:
-                                            cvss_score = float(_offline_score)
-                                except Exception:
-                                    pass
+                            if cve_id and cvss_score is None and _cve_engine:
+                                if cve_id in _cve_engine._offline_db:
+                                    _offline_score = _cve_engine._offline_db[cve_id].get("cvss_score")
+                                    if _offline_score is not None:
+                                        cvss_score = float(_offline_score)
                             severity = self._severity_from_script(script_name)
                             # Override severity from CVSS score when available
                             if cvss_score is not None:
@@ -1032,10 +1649,10 @@ class NmapEngine:
                                     severity = "medium"
                                 else:
                                     severity = "low"
-                            # Leave cve_id as None when no CVE ID extracted from output
-                            # (cve_id column is String(20); nse_script_name stores the script name)
                             if not cve_id:
                                 cve_id = None
+                            else:
+                                nse_cve_ids_saved.add(cve_id)
                             vuln = Vulnerability(
                                 port_id=port.id,
                                 scan_id=scan.id,
@@ -1053,10 +1670,58 @@ class NmapEngine:
                             db_session.add(vuln)
 
                             logger.info(
-                                "[NETRIX] %s | Vulnerability: %s on %s:%d",
+                                "[NETRIX] %s | NSE Vulnerability: %s on %s:%d",
                                 datetime.now(timezone.utc).isoformat(),
                                 script_name, host_data.ip, svc.port,
                             )
+
+                    # ── Step 4b: Service-version CVE matching (offline DB) ──
+                    # Run for every open port that has a known product/service.
+                    # This catches CVEs even when NSE scripts don't explicitly
+                    # fire — e.g. OpenSSH 7.4, Apache 2.4.49, vsftpd 2.3.4.
+                    if svc.state == "open" and _cve_engine and (svc.product or svc.service_name):
+                        try:
+                            svc_cve_matches = self._match_service_cves_offline(
+                                product=svc.product or svc.service_name,
+                                version=svc.version or "",
+                                cpe=svc.cpe or "",
+                                offline_db=_cve_engine._offline_db,
+                            )
+                            for matched_cve_id, cve_data in svc_cve_matches[:5]:
+                                if matched_cve_id in nse_cve_ids_saved:
+                                    continue  # Already saved by NSE step
+                                # Skip if this CVE is already recorded for this scan
+                                already = db_session.query(Vulnerability).filter(
+                                    Vulnerability.scan_id == scan.id,
+                                    Vulnerability.cve_id == matched_cve_id,
+                                ).first()
+                                if already:
+                                    continue
+                                score = float(cve_data.get("cvss_score") or 0.0)
+                                sev = cve_data.get("severity") or self._severity_from_cvss(score)
+                                vuln = Vulnerability(
+                                    port_id=port.id,
+                                    scan_id=scan.id,
+                                    host_id=host.id,
+                                    cve_id=matched_cve_id,
+                                    cvss_score=score or None,
+                                    title=cve_data.get("title") or matched_cve_id,
+                                    description=(cve_data.get("description") or "")[:2000],
+                                    severity=sev,
+                                    source="offline_db",
+                                    remediation=(cve_data.get("remediation") or "")[:1000] or None,
+                                    is_confirmed=False,
+                                )
+                                db_session.add(vuln)
+                                nse_cve_ids_saved.add(matched_cve_id)
+                                logger.info(
+                                    "[NETRIX] %s | Service CVE match: %s on %s:%d (%s %s)",
+                                    datetime.now(timezone.utc).isoformat(),
+                                    matched_cve_id, host_data.ip, svc.port,
+                                    svc.product, svc.version,
+                                )
+                        except Exception as _svc_match_err:
+                            logger.debug("[NETRIX] Service CVE match error: %s", _svc_match_err)
 
             # ── Step 5: Finalise scan record ─────────────────────
             scan.status = "completed"
@@ -1104,13 +1769,14 @@ class NmapEngine:
     @staticmethod
     def _extract_cve_from_output(output: str):
         """
-        Extract the first CVE ID and its CVSS score from NSE script output.
+        Extract the highest-scored CVE ID and CVSS score from NSE script output.
 
-        Handles two common formats produced by the ``vulners`` and
-        ``vuln``-category scripts:
-          - ``CVE-2011-2523 10.0``   (vulners style)
-          - ``IDs: CVE:CVE-2011-2523``  (vuln-category style)
+        Handles multiple formats:
+          - ``CVE-2011-2523 10.0``          (vulners script)
+          - ``IDs: CVE:CVE-2011-2523``      (vuln-category script)
+          - ``CVE-2011-2523``               (bare CVE reference)
 
+        Returns the CVE with the highest CVSS score found in the output.
         Returns:
             tuple[str|None, float|None]: (cve_id, cvss_score)
         """
@@ -1118,23 +1784,118 @@ class NmapEngine:
         if not output:
             return None, None
 
-        # Try "CVE-XXXX-XXXXXX <score>" (vulners script format)
-        scored = _re.search(r'(CVE-\d{4}-\d{4,7})\s+(\d+(?:\.\d+)?)', output)
-        if scored:
-            cve_id = scored.group(1)
-            try:
-                score = float(scored.group(2))
-                cvss_score = score if 0.0 <= score <= 10.0 else None
-            except ValueError:
-                cvss_score = None
-            return cve_id, cvss_score
+        best_cve: Optional[str] = None
+        best_score: Optional[float] = None
 
-        # Try "CVE:CVE-XXXX-XXXXXX" (vuln-category script format)
-        prefixed = _re.search(r'CVE:(CVE-\d{4}-\d{4,7})', output)
+        # Format 1: "CVE-XXXX-XXXXXX <score>" (vulners script — multiple per output)
+        for m in _re.finditer(r'(CVE-\d{4}-\d{4,7})\s+(\d+(?:\.\d+)?)', output):
+            cid = m.group(1)
+            try:
+                s = float(m.group(2))
+                if 0.0 <= s <= 10.0:
+                    if best_score is None or s > best_score:
+                        best_score = s
+                        best_cve = cid
+            except ValueError:
+                pass
+
+        if best_cve:
+            return best_cve, best_score
+
+        # Format 2: "CVE:CVE-XXXX-XXXXXX" (vuln-category scripts)
+        prefixed = _re.search(r'CVE:(CVE-\d{4}-\d{4,7})', output, _re.IGNORECASE)
         if prefixed:
             return prefixed.group(1), None
 
+        # Format 3: bare "CVE-XXXX-XXXXXX" reference
+        bare = _re.search(r'(CVE-\d{4}-\d{4,7})', output, _re.IGNORECASE)
+        if bare:
+            return bare.group(1), None
+
         return None, None
+
+    @staticmethod
+    def _severity_from_cvss(score: float) -> str:
+        """Convert a CVSS score to a severity label."""
+        if score >= 9.0:
+            return "critical"
+        if score >= 7.0:
+            return "high"
+        if score >= 4.0:
+            return "medium"
+        if score > 0.0:
+            return "low"
+        return "info"
+
+    @staticmethod
+    def _match_service_cves_offline(
+        product: str,
+        version: str,
+        cpe: str,
+        offline_db: dict,
+    ) -> list:
+        """
+        Match a service (product + version) to CVEs using only the offline DB.
+        Returns a list of (cve_id, cve_data) tuples, sorted by CVSS score desc.
+
+        Matching strategy (broadest to narrowest):
+        1. Well-known vulnerable service table (exact & prefix match)
+        2. Offline DB 'affected' list (partial name match)
+        3. Offline DB description text match
+        """
+        import re as _re
+        from app.scanner.vuln_engine import WELL_KNOWN_VULNERABLE_SERVICES
+
+        results: list = []
+        seen: set = set()
+
+        name_lower = product.lower().strip()
+        version_lower = version.lower().strip()
+        # First meaningful word of the product name, e.g. "apache" from "apache httpd"
+        name_first = name_lower.split()[0] if name_lower else ""
+        lookup_full = f"{name_lower} {version_lower}".strip()
+        lookup_short = f"{name_first} {version_lower}".strip() if name_first != name_lower else ""
+
+        # ── 1. Well-known vulnerable services ──────────────────────
+        for key, cve_ids in WELL_KNOWN_VULNERABLE_SERVICES.items():
+            if key in (lookup_full, lookup_short, name_lower, name_first) or \
+               name_lower.startswith(key) or name_first == key.split()[0]:
+                for cid in cve_ids:
+                    if cid not in seen and cid in offline_db:
+                        results.append((cid, offline_db[cid]))
+                        seen.add(cid)
+
+        # ── 2. Offline DB 'affected' list match ────────────────────
+        for cve_id, cve_data in offline_db.items():
+            if cve_id in seen:
+                continue
+            for af in cve_data.get("affected", []):
+                af_lower = af.lower()
+                # Match if product name word (e.g. "apache") appears in affected string
+                if name_first and name_first in af_lower:
+                    # Version match: if version given, require it to appear in affected
+                    if not version_lower or version_lower in af_lower or version_lower[:3] in af_lower:
+                        results.append((cve_id, cve_data))
+                        seen.add(cve_id)
+                        break
+                elif name_lower and name_lower in af_lower:
+                    results.append((cve_id, cve_data))
+                    seen.add(cve_id)
+                    break
+
+        # ── 3. Description text match (fallback, only if version known) ──
+        if version_lower and name_first:
+            for cve_id, cve_data in offline_db.items():
+                if cve_id in seen:
+                    continue
+                desc = cve_data.get("description", "").lower()
+                if name_first in desc and version_lower[:3] in desc:
+                    results.append((cve_id, cve_data))
+                    seen.add(cve_id)
+
+        # Sort by CVSS score descending
+        results.sort(key=lambda x: float(x[1].get("cvss_score") or 0), reverse=True)
+        return results
 
     @staticmethod
     def _severity_from_script(script_name: str) -> str:

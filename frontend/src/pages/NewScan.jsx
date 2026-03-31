@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useDispatch } from 'react-redux'
@@ -66,7 +67,8 @@ export default function NewScan() {
     // Scan state
     const [phase, setPhase] = useState('form') // form | scanning | complete
     const [scanInfo, setScanInfo] = useState(null)
-    const [progress, setProgress] = useState(0)
+    const [progress, setProgress] = useState(0)        // target value (from WS/poll)
+    const [animProgress, setAnimProgress] = useState(0) // smoothly animated display value
     const [elapsed, setElapsed] = useState(0)
     const [terminalLines, setTerminalLines] = useState([])
     const [liveHosts, setLiveHosts] = useState([])
@@ -84,6 +86,7 @@ export default function NewScan() {
     const pollRef = useRef(null)
     const lineIdRef = useRef(0)
     const reconnectCountRef = useRef(0)
+    const scanCompleteRef = useRef(false)   // avoids stale closure in WS handlers
     const MAX_RECONNECT = 3
 
     // Sanitize: strip protocol, paths, ports from URL-style input
@@ -110,10 +113,11 @@ export default function NewScan() {
         }
         const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/
         const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/
-        const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/
-        if (!ipRegex.test(t) && !cidrRegex.test(t) && !domainRegex.test(t)) {
-            if (t.includes('/')) return 'Use just the domain or IP — no paths or slashes e.g. example.com'
-            return 'Enter a valid target: IP (10.0.0.1), CIDR (10.0.0.0/24), or domain (example.com)'
+        // Accept: single-label hostnames (router, myserver) and FQDNs (example.com)
+        const hostnameRegex = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/
+        if (!ipRegex.test(t) && !cidrRegex.test(t) && !hostnameRegex.test(t)) {
+            if (t.includes('/')) return 'Use just the hostname or IP — no paths or slashes e.g. example.com'
+            return 'Enter a valid target: IP (10.0.0.1), CIDR (10.0.0.0/24), hostname (router), or domain (example.com)'
         }
         return null
     }
@@ -227,6 +231,7 @@ export default function NewScan() {
                 break
 
             case 'scan_complete':
+                scanCompleteRef.current = true
                 setProgress(100)
                 setScanComplete(true)
                 addTerminalLine(data.message || '✅ Scan completed!', 'scan_complete')
@@ -238,16 +243,27 @@ export default function NewScan() {
                     duration: data.duration || 'N/A',
                 })
                 stopTimer()
+                // Close WS with normal code so onclose won't try to reconnect
+                if (wsRef.current) {
+                    try { wsRef.current.close(1000) } catch (_) {}
+                    wsRef.current = null
+                }
                 setTimeout(() => setPhase('complete'), 1500)
                 break
 
             case 'error':
+                scanCompleteRef.current = true
                 addTerminalLine(`❌ Scan failed: ${data.message || 'Unknown error'}`, 'error')
                 addTerminalLine('💡 TIP: Try Quick scan first, or run VS Code as Administrator for advanced scans', 'warning')
                 setScanFailed(true)
                 setScanComplete(true)
                 setCompletionData(null)
                 stopTimer()
+                // Close WS with normal code so onclose won't try to reconnect
+                if (wsRef.current) {
+                    try { wsRef.current.close(1000) } catch (_) {}
+                    wsRef.current = null
+                }
                 setTimeout(() => setPhase('complete'), 1500)
                 break
 
@@ -346,16 +362,17 @@ export default function NewScan() {
 
             ws.onerror = (err) => {
                 console.error('[Netrix] WebSocket error:', err)
-                addTerminalLine('⚠️ Live connection failed, switching to polling...', 'error')
-                // Close the WS and fall back to polling
-                try { ws.close() } catch (_) { }
+                addTerminalLine('⚠️ Live connection failed, switching to polling...', 'warning')
+                // Do NOT call ws.close() here — it triggers onclose with code 1006
+                // which would cause unwanted reconnection attempts.
+                // The browser will close the socket automatically after an error.
                 wsRef.current = null
                 startPolling(scanId)
             }
 
             ws.onclose = (event) => {
-                // Only reconnect if scan is still active and not intentionally closed
-                if (!scanComplete && event.code !== 1000) {
+                // Use ref instead of state to avoid stale closure
+                if (!scanCompleteRef.current && event.code !== 1000) {
                     if (reconnectCountRef.current < MAX_RECONNECT) {
                         reconnectCountRef.current++
                         const attempt = reconnectCountRef.current
@@ -369,7 +386,7 @@ export default function NewScan() {
                     } else {
                         addTerminalLine(
                             '⚠️ Max reconnect attempts reached, switching to polling...',
-                            'error'
+                            'warning'
                         )
                         startPolling(scanId)
                     }
@@ -380,7 +397,7 @@ export default function NewScan() {
             addTerminalLine('⚠️ WebSocket unavailable, using polling...', 'error')
             startPolling(scanId)
         }
-    }, [addTerminalLine, handleWsMessage, startPolling, scanComplete])
+    }, [addTerminalLine, handleWsMessage, startPolling])
 
     // Timer
     const startTimer = () => {
@@ -418,6 +435,7 @@ export default function NewScan() {
             setScanInfo(scan)
             dispatch(setActiveScan(scan))
             setProgress(0)
+            setAnimProgress(0)
             setElapsed(0)
             setTerminalLines([])
             setLiveHosts([])
@@ -425,6 +443,7 @@ export default function NewScan() {
             setCompletionData(null)
             setScanComplete(false)
             setScanFailed(false)
+            scanCompleteRef.current = false
             reconnectCountRef.current = 0
             setPhase('scanning')
             startTimer()
@@ -457,6 +476,22 @@ export default function NewScan() {
         setPhase('form')
         setProgress(0)
     }
+
+    // Smooth progress animation — eases animProgress toward progress target
+    // so the bar moves fluidly even when multiple events arrive at once.
+    useEffect(() => {
+        let frameId
+        const animate = () => {
+            setAnimProgress(prev => {
+                const diff = progress - prev
+                if (Math.abs(diff) < 0.3) return progress  // close enough, snap
+                return prev + diff * 0.08  // ease factor: ~8% of remaining gap per frame
+            })
+            frameId = requestAnimationFrame(animate)
+        }
+        frameId = requestAnimationFrame(animate)
+        return () => cancelAnimationFrame(frameId)
+    }, [progress])
 
     // Auto-scroll terminal
     useEffect(() => {
@@ -502,7 +537,7 @@ export default function NewScan() {
                                     value={target}
                                     onChange={(e) => { setTarget(e.target.value); setError('') }}
                                     onBlur={(e) => { const s = sanitizeTarget(e.target.value); if (s !== e.target.value.trim()) setTarget(s) }}
-                                    placeholder="e.g. 192.168.1.0/24 or example.com"
+                                    placeholder="e.g. 192.168.1.1, 10.0.0.0/24, router, or example.com"
                                     className="w-full bg-transparent py-3 pr-4 text-netrix-text placeholder-netrix-muted/50 focus:outline-none font-mono"
                                     autoComplete="off"
                                     onKeyDown={(e) => e.key === 'Enter' && handleLaunch()}
@@ -691,12 +726,12 @@ export default function NewScan() {
                 <div className="glass-card p-4 mb-4">
                     <div className="flex items-center justify-between text-sm mb-2">
                         <span className="text-netrix-muted">Progress</span>
-                        <span className="font-mono text-netrix-accent font-bold text-lg">{Math.round(progress)}%</span>
+                        <span className="font-mono text-netrix-accent font-bold text-lg">{Math.round(animProgress)}%</span>
                     </div>
                     <div className="progress-bar h-4">
                         <div
                             className="progress-bar-fill"
-                            style={{ width: `${progress}%` }}
+                            style={{ width: `${animProgress}%` }}
                         />
                     </div>
                 </div>

@@ -83,6 +83,25 @@ def create_all_tables() -> None:
         len(new_tables),
     )
 
+    # Run column-level migrations for existing tables
+    _run_column_migrations()
+
+
+def _run_column_migrations() -> None:
+    """Add new columns to existing tables that were created before the column existed."""
+    inspector = inspect(engine)
+    try:
+        existing_cols = {c["name"] for c in inspector.get_columns("users")}
+        if "api_key" not in existing_cols:
+            with engine.connect() as conn:
+                conn.execute(text(
+                    "ALTER TABLE users ADD COLUMN api_key VARCHAR(64) UNIQUE NULL"
+                ))
+                conn.commit()
+            logger.info("[NETRIX] Migration: added users.api_key column")
+    except Exception as exc:
+        logger.warning("[NETRIX] Column migration warning: %s", exc)
+
 
 # ─────────────────────────────────────────
 # Default Admin Seeding

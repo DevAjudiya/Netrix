@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { configureStore, createSlice } from '@reduxjs/toolkit'
 
 const _hasToken = !!localStorage.getItem('netrix_token')

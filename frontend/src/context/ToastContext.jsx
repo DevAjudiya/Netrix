@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { createContext, useContext, useState, useCallback, useRef } from 'react'
 import { CheckCircle, XCircle, AlertTriangle, Info, X } from 'lucide-react'
 

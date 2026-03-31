@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 export default function LoadingSpinner({ size = 'md', text = '' }) {
     const sizes = {
         sm: 'w-5 h-5',

@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 const severityConfig = {
     critical: {
         bg: 'bg-severity-critical/15',

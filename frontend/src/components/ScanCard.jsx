@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useNavigate } from 'react-router-dom'
 import { Clock, Target, Wifi, AlertTriangle } from 'lucide-react'
 import VulnBadge from './VulnBadge'

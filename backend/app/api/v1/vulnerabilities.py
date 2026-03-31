@@ -38,7 +38,7 @@ router = APIRouter()
 )
 async def list_vulnerabilities(
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    page_size: int = Query(500, ge=1, le=500, description="Items per page"),
     severity: Optional[str] = Query(None, description="Filter by severity"),
     source: Optional[str] = Query(None, description="Filter by source"),
     confirmed_only: bool = Query(False, description="Only confirmed vulnerabilities"),

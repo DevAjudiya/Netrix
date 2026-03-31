@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Fetch ~1000 major CVEs from NVD API v2 and merge into the offline database.
+Fetch ~1000 CVEs from NVD API v2 and merge into the offline database.
 
 Run inside the backend container:
     python3 scripts/populate_cve_db.py
 
-Fetches CRITICAL CVEs first, then HIGH, until TARGET is reached.
+Fetches CVEs across all severities: CRITICAL, HIGH, MEDIUM, LOW.
 Skips CVEs already in the database.
 """
 
@@ -75,9 +75,6 @@ def _parse_item(item: dict):
         severity = sev.lower() if sev else _score_to_severity(cvss_score)
         break
 
-    # Drop low-signal entries
-    if cvss_score < 7.0:
-        return None, None
 
     published = cve_data.get("published", "")[:10]
 
@@ -164,9 +161,9 @@ def main():
         print(f"DB already has {len(db)} entries — nothing to do.")
         return
 
-    print(f"Need {need} more CVEs to reach {TARGET} total (CVSS ≥ 7.0 only).\n")
+    print(f"Need {need} more CVEs to reach {TARGET} total (all severities).\n")
 
-    for severity in ("CRITICAL", "HIGH"):
+    for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
         if added >= need:
             break
 

@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { authAPI } from '../services/api'
@@ -16,6 +17,15 @@ export default function Register() {
     const [error, setError] = useState('')
     const [readOnly, setReadOnly] = useState(true)
 
+    const validatePassword = (pwd) => {
+        if (pwd.length < 8) return 'Password must be at least 8 characters long'
+        if (!/[A-Z]/.test(pwd)) return 'Password must contain at least one uppercase letter'
+        if (!/[0-9]/.test(pwd)) return 'Password must contain at least one digit'
+        if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(pwd))
+            return 'Password must contain at least one special character'
+        return null
+    }
+
     const handleSubmit = async (e) => {
         e.preventDefault()
         setError('')
@@ -23,6 +33,10 @@ export default function Register() {
         if (!username.trim()) return setError('Username is required')
         if (!email.trim()) return setError('Email is required')
         if (!password.trim()) return setError('Password is required')
+
+        const pwdError = validatePassword(password)
+        if (pwdError) return setError(pwdError)
+
         if (password !== confirmPassword) return setError('Passwords do not match')
 
         setLoading(true)
@@ -30,10 +44,17 @@ export default function Register() {
             await authAPI.register(username, email, password)
             navigate('/login', { state: { registered: true } })
         } catch (err) {
-            const msg =
-                err.response?.data?.message ||
-                err.response?.data?.detail ||
-                'Registration failed. Please try again.'
+            const data = err.response?.data
+            let msg = 'Registration failed. Please try again.'
+            if (data?.message) {
+                msg = data.message
+            } else if (Array.isArray(data?.detail)) {
+                // Pydantic 422 validation error — extract first message
+                const raw = data.detail[0]?.msg || msg
+                msg = raw.replace(/^Value error,\s*/i, '')
+            } else if (typeof data?.detail === 'string') {
+                msg = data.detail
+            }
             setError(msg)
         } finally {
             setLoading(false)
@@ -155,6 +176,20 @@ export default function Register() {
                                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                                 </button>
                             </div>
+                            {password && (
+                                <ul className="mt-1.5 space-y-0.5 text-xs">
+                                    {[
+                                        { label: 'At least 8 characters', ok: password.length >= 8 },
+                                        { label: 'One uppercase letter', ok: /[A-Z]/.test(password) },
+                                        { label: 'One digit', ok: /[0-9]/.test(password) },
+                                        { label: 'One special character', ok: /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(password) },
+                                    ].map(({ label, ok }) => (
+                                        <li key={label} className={`flex items-center gap-1.5 ${ok ? 'text-green-400' : 'text-netrix-muted/60'}`}>
+                                            <span>{ok ? '✓' : '·'}</span>{label}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
                         </div>
 
                         <div>
@@ -215,6 +250,8 @@ export default function Register() {
 
                 <p className="text-center text-netrix-muted/40 text-xs mt-6">
                     Netrix v1.0 — Network Scanning &amp; Vulnerability Assessment
+                    <br />
+                    &copy; 2026 @DevAjudiya. All rights reserved.
                 </p>
             </div>
         </div>

@@ -1,3 +1,4 @@
+// © 2026 @DevAjudiya. All rights reserved.
 import { useState, useEffect } from 'react'
 import { vulnsAPI } from '../services/api'
 import {
@@ -22,14 +23,29 @@ export default function Vulnerabilities() {
         const loadVulns = async () => {
             setLoading(true)
             try {
-                const params = {}
+                const params = { page_size: 500, page: 1 }
                 if (severityFilter !== 'all') params.severity = severityFilter
                 if (search) params.search = search
                 const res = await vulnsAPI.list(params)
-                setVulns(Array.isArray(res.data) ? res.data : res.data?.items || res.data?.vulnerabilities || [])
+                const data = res.data
+                let items = Array.isArray(data) ? data : data?.vulnerabilities || data?.items || []
+
+                // Fetch remaining pages if total > 500
+                const total = data?.total || items.length
+                const totalPages = data?.total_pages || 1
+                if (totalPages > 1) {
+                    const rest = await Promise.all(
+                        Array.from({ length: totalPages - 1 }, (_, i) =>
+                            vulnsAPI.list({ ...params, page: i + 2 })
+                        )
+                    )
+                    rest.forEach(r => {
+                        const d = r.data
+                        items = items.concat(Array.isArray(d) ? d : d?.vulnerabilities || d?.items || [])
+                    })
+                }
+                setVulns(items)
             } catch (err) {
-                // Only show error for real errors
-                // not for empty results
                 if (err.response?.status !== 404) {
                     setError('Failed to load vulnerabilities')
                 }

@@ -1,3 +1,4 @@
+# © 2026 @DevAjudiya. All rights reserved.
 # ─────────────────────────────────────────
 # Netrix — cli/commands/scan.py
 # Purpose: Scan command — interactive wizard + direct mode.
