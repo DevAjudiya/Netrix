@@ -625,9 +625,19 @@ async def scan_websocket(
                 if scan_status_val in ("pending", "running"):
                     # Scan is still in progress per DB — keep waiting
                     pass
-                elif scan_status_val in ("completed", "failed"):
-                    # Fetch real totals from DB instead of sending zeros
-                    total_hosts = 0
+                elif scan_status_val == "failed":
+                    # Scan already failed — send proper error event
+                    err_msg = live.get("message", "Scan failed.")
+                    await websocket.send_json({
+                        "event": "error",
+                        "message": f"❌ {err_msg}",
+                        "scan_id": scan_id,
+                    })
+                    return
+
+                elif scan_status_val == "completed":
+                    # Fetch real totals from DB
+                    total_hosts = total_ports = total_vulns = 0
                     try:
                         from app.database.session import SessionLocal
                         from app.models.scan import Scan as ScanModel
@@ -652,12 +662,10 @@ async def scan_websocket(
                                     .filter(VulnModel.scan_id == _scan.id)
                                     .count()
                                 )
-                            else:
-                                total_ports = total_vulns = 0
                         finally:
                             _db.close()
                     except Exception:
-                        total_ports = total_vulns = 0
+                        pass
 
                     await websocket.send_json({
                         "event": "scan_complete",
@@ -667,7 +675,7 @@ async def scan_websocket(
                         "total_vulns": total_vulns,
                         "critical_count": 0,
                         "duration": "N/A",
-                        "message": f"✅ Scan {scan_status_val}.",
+                        "message": "✅ Scan completed.",
                         "scan_id": scan_id,
                     })
                     return

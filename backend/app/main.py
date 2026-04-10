@@ -61,6 +61,24 @@ async def lifespan(app: FastAPI):
     # Initialize database tables
     init_database()
 
+    # Mark any scans left in running/pending as failed (from a previous crash/restart)
+    try:
+        from app.database.session import SessionLocal
+        from app.models.scan import Scan
+        from datetime import datetime, timezone
+        _db = SessionLocal()
+        stuck = _db.query(Scan).filter(Scan.status.in_(["running", "pending"])).all()
+        if stuck:
+            for _s in stuck:
+                _s.status = "failed"
+                _s.error_message = "Server restarted — scan interrupted."
+                _s.completed_at = datetime.now(timezone.utc)
+            _db.commit()
+            logger.info("[NETRIX] Marked %d interrupted scan(s) as failed on startup.", len(stuck))
+        _db.close()
+    except Exception as _cleanup_err:
+        logger.warning("[NETRIX] Startup scan cleanup failed: %s", str(_cleanup_err))
+
     # Connect to Redis
     try:
         app.state.redis = aioredis.from_url(

@@ -157,7 +157,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     """
 
     # General rate limit: requests per window
-    GENERAL_LIMIT: int = 100
+    GENERAL_LIMIT: int = 500
     # General rate limit window in seconds (1 minute)
     GENERAL_WINDOW: int = 60
     # Scan rate limit: scans per window (from config)

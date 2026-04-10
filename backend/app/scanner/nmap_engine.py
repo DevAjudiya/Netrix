@@ -43,39 +43,86 @@ CRITICAL_PORTS: List[int] = [
     5432, 5900, 6379, 8080, 8443, 27017,
 ]
 
+# ─────────────────────────────────────────
+# Scan profile definitions
+# Each profile drives two separate nmap passes:
+#   phase1 = fast SYN sweep to discover which ports are open
+#   phase2 = version/OS/script detection ONLY on the discovered open ports
+#
+# Splitting the passes is critical: running -sV against 65 535 ports is
+# 100x slower than running it against the 10-30 typically-open ones.
+# ─────────────────────────────────────────
 SCAN_PROFILES = {
+    # ── Quick ─────────────────────────────────────────────────────
+    # Top-1000 ports, moderate speed, version + key banners.
+    # Good for a first look at a host without being too noisy.
     "quick": {
-        "args": "-sS -sV -T4 -F --open --max-retries 1 --min-rate 1000",
-        "time": "30s-1 min"
+        "phase1": "-sS -Pn -T4 --open --top-ports 1000 --min-rate 500 --max-retries 2",
+        "phase2_flags": "-sS -sV --version-intensity 7 -Pn -T4 --open",
+        "phase2_scripts": "--script=banner,http-title,http-server-header,ssh-hostkey,ftp-anon",
+        "os_detect": False,
+        "p1_timeout": "120s",
+        "p2_timeout": "300s",
+        "time": "2-5 min",
     },
+    # ── Stealth ────────────────────────────────────────────────────
+    # Ports 1-1000, slow T2 timing to minimise IDS/firewall triggers.
+    # Banner script only — minimal script footprint.
     "stealth": {
-        "args": "-sS -sV -Pn -T3 --open -p 1-1000 --min-rate 300",
-        "time": "2-5 min"
+        "phase1": "-sS -Pn -T2 --open -p 1-1000 --min-rate 100 --max-retries 3",
+        "phase2_flags": "-sT -sV --version-intensity 5 -Pn -T2 --open",
+        "phase2_scripts": "--script=banner",
+        "os_detect": False,
+        "p1_timeout": "300s",
+        "p2_timeout": "600s",
+        "time": "5-10 min",
     },
+    # ── Full ───────────────────────────────────────────────────────
+    # All 65 535 TCP ports.  Phase 1 is fast; Phase 2 adds OS + rich scripts.
     "full": {
-        "args": "-sS -sV -O -Pn -T4 --open -p 1-65535 --min-rate 1000",
-        "time": "5-15 min"
+        "phase1": "-sS -Pn -T4 --open -p 1-65535 --min-rate 1000 --max-retries 2",
+        "phase2_flags": "-sS -sV --version-intensity 9 -O -Pn -T4 --open",
+        "phase2_scripts": (
+            "--script=banner,http-title,http-server-header,http-methods,"
+            "ssh-hostkey,ftp-anon,ssl-cert,smtp-commands,dns-recursion"
+        ),
+        "os_detect": True,
+        "p1_timeout": "600s",
+        "p2_timeout": "900s",
+        "time": "10-20 min",
     },
+    # ── Aggressive ─────────────────────────────────────────────────
+    # Top-10 000 ports with the full NSE default-script suite + OS detection.
     "aggressive": {
-        "args": "-sS -sV -sC -O -Pn -T4 --open -p 1-10000 --min-rate 1000",
-        "time": "3-8 min"
+        "phase1": "-sS -Pn -T4 --open --top-ports 10000 --min-rate 1000 --max-retries 2",
+        "phase2_flags": "-sS -sV --version-intensity 9 -O -Pn -T4 --open",
+        "phase2_scripts": (
+            "-sC --script=banner,http-title,http-server-header,ftp-anon,"
+            "ssh-hostkey,ssl-cert,smtp-commands,dns-recursion,"
+            "smtp-open-relay,http-shellshock"
+        ),
+        "os_detect": True,
+        "p1_timeout": "300s",
+        "p2_timeout": "600s",
+        "time": "5-15 min",
     },
+    # ── Vulnerability ──────────────────────────────────────────────
+    # Phase 1 (port discovery) + Phase 2 (scripts on open ports only)
+    # Actual args are built dynamically in _run_vulnerability_scan().
     "vulnerability": {
-        # Phase 1 (port discovery) + Phase 2 (scripts on open ports only)
-        # Actual args are built dynamically in _run_vulnerability_scan().
         "args": "",
-        "time": "10-20 min"
-    }
+        "time": "10-20 min",
+    },
 }
 
 # Estimated nmap execution duration (seconds) per scan type.
 # Used by the progress ticker to spread simulated progress across the run.
 SCAN_ESTIMATED_SECONDS = {
-    "quick":         45,
-    "stealth":       180,
-    "full":          600,
-    "aggressive":    300,
-    "vulnerability": 600,
+    "quick":         180,
+    "stealth":       480,
+    "full":          900,
+    "aggressive":    600,
+    "vulnerability": 900,
 }
 
 # Targeted NSE scripts only — no heavy "vuln" category (offline DB covers CVEs).
@@ -367,7 +414,7 @@ class NmapEngine:
 
         started_at = datetime.now(timezone.utc)
 
-        # ── Vulnerability scan: two-phase (port discovery → script scan) ──
+        # ── Vulnerability scan: dedicated two-phase implementation ──
         if scan_type == ScanType.VULNERABILITY and not custom_args:
             return self._run_vulnerability_scan(
                 target=target,
@@ -378,158 +425,460 @@ class NmapEngine:
                 started_at=started_at,
             )
 
-        # ── Determine nmap arguments ─────────────────────────────
+        # ── Custom scan: single-pass with user-supplied args ──────
         if scan_type == ScanType.CUSTOM:
             args = custom_args if custom_args else "-sV -T4 --open"
-        else:
-            profile = SCAN_PROFILES.get(scan_type, SCAN_PROFILES[ScanType.FULL])
-            args = profile["args"]
-
-        if custom_ports:
-            # Remove any existing -p flag and append custom ports
-            args_parts = args.split()
-            args_parts = [p for p in args_parts if not p.startswith("-p")]
-            args = " ".join(args_parts) + f" -p {custom_ports}"
-
-        self._update_progress(
-            scan_id, 5, "starting",
-            f"Preparing {scan_type.value} scan on {target}",
-            callback,
-        )
-
-        logger.info("[NETRIX] %s | Starting %s scan on %s", datetime.now(timezone.utc).isoformat(), scan_type.value, target)
-        logger.info("[NETRIX] %s | Command: nmap %s %s", datetime.now(timezone.utc).isoformat(), args, target)
-
-        # ── Execute nmap ─────────────────────────────────────────
-        self._update_progress(
-            scan_id, 10, "running",
-            "🚀 Nmap scan launched — probing target…",
-            callback,
-        )
-
-        # Start a background ticker so the frontend sees smooth progress
-        # while nmap blocks (10 % → 65 % over the expected scan duration).
-        estimated = SCAN_ESTIMATED_SECONDS.get(scan_type.value, 300)
-        _stop_ticker = threading.Event()
-        if callback:
-            _ticker_thread = threading.Thread(
-                target=_progress_ticker,
-                args=(scan_id, 10, 65, estimated, callback, _stop_ticker),
-                daemon=True,
+            if custom_ports:
+                args_parts = [p for p in args.split() if not p.startswith("-p")]
+                args = " ".join(args_parts) + f" -p {custom_ports}"
+            return self._run_custom_scan(
+                target=target,
+                scan_id=scan_id,
+                args=args,
+                callback=callback,
+                event_callback=event_callback,
+                started_at=started_at,
             )
-            _ticker_thread.start()
+
+        # ── Standard scans: two-phase (discovery → version/scripts) ─
+        return self._run_standard_scan(
+            target=target,
+            scan_type=scan_type,
+            scan_id=scan_id,
+            custom_ports=custom_ports,
+            callback=callback,
+            event_callback=event_callback,
+            started_at=started_at,
+        )
+
+    # ─────────────────────────────────────
+    # Standard two-phase scan (quick / stealth / full / aggressive)
+    # ─────────────────────────────────────
+    def _run_standard_scan(
+        self,
+        target: str,
+        scan_type: "ScanType",
+        scan_id: str,
+        custom_ports: str,
+        callback: Optional[Callable],
+        event_callback: Optional[Callable],
+        started_at: datetime,
+    ) -> "ScanSummary":
+        """
+        Two-phase scan shared by quick / stealth / full / aggressive types.
+
+        Phase 1  — Fast SYN sweep to identify which ports are open.
+        Phase 2a — Version + OS + banner detection ONLY on open ports.
+        Phase 2b — Retry with TCP-connect + banner script when Phase 2a
+                   returns no product/version (common against hardened
+                   internet hosts that drop SYN-based version probes).
+        """
+        profile = SCAN_PROFILES[scan_type.value]
+        p1_args  = profile["phase1"]
+        p2_flags = profile["phase2_flags"]
+        p2_scrip = profile["phase2_scripts"]
+        os_flag  = "-O" if profile.get("os_detect") else ""
+        p1_to    = profile["p1_timeout"]
+        p2_to    = profile["p2_timeout"]
+        profile_time = profile["time"]
+
+        # ── Override port range if caller supplied custom_ports ───
+        if custom_ports:
+            # Strip any --top-ports / -p from the phase1 template
+            p1_parts = [
+                p for p in p1_args.split()
+                if not p.startswith("-p") and p != "--top-ports"
+                and not (p1_args.split()[p1_args.split().index(p) - 1]
+                         if p1_args.split().index(p) > 0 else "").startswith("--top-ports")
+            ]
+            # Rebuild without top-ports value token
+            clean = []
+            skip_next = False
+            for tok in p1_args.split():
+                if skip_next:
+                    skip_next = False
+                    continue
+                if tok == "--top-ports":
+                    skip_next = True
+                    continue
+                if tok.startswith("-p"):
+                    continue
+                clean.append(tok)
+            p1_args = " ".join(clean) + f" -p {custom_ports}"
+
+        # ════════════════════════════════════════════════════════
+        # Phase 1 — Port discovery
+        # ════════════════════════════════════════════════════════
+        self._update_progress(
+            scan_id, 5, "running",
+            f"Phase 1/2 — port discovery on {target} ({scan_type.value})…",
+            callback,
+        )
+        logger.info(
+            "[NETRIX] %s | [%s] Phase 1 — discovery: nmap %s %s",
+            datetime.now(timezone.utc).isoformat(), scan_id, p1_args, target,
+        )
+
+        _stop_p1 = threading.Event()
+        if callback:
+            threading.Thread(
+                target=_progress_ticker,
+                args=(scan_id, 5, 35, 60, callback, _stop_p1,
+                      ["Sending SYN probes…", "Probing port ranges…",
+                       "Waiting for host responses…", "Filtering open ports…"]),
+                daemon=True,
+            ).start()
+
+        nm_disc = nmap.PortScanner()
+        try:
+            nm_disc.scan(
+                hosts=target,
+                arguments=f"{p1_args} --host-timeout {p1_to}",
+            )
+        except nmap.PortScannerError as e:
+            _stop_p1.set()
+            err = str(e)
+            if "root" in err.lower() or "admin" in err.lower():
+                raise Exception("Need root privileges for SYN scan.")
+            raise Exception(f"Port discovery failed: {e}")
+        except Exception as e:
+            _stop_p1.set()
+            raise Exception(f"Port discovery failed: {e}")
+        finally:
+            _stop_p1.set()
+
+        # Collect every open port across all discovered hosts
+        open_ports: List[int] = []
+        p1_hosts = nm_disc.all_hosts()
+        for h in p1_hosts:
+            for proto in ("tcp", "udp"):
+                try:
+                    for p, data in nm_disc[h].get(proto, {}).items():
+                        if data.get("state") == "open":
+                            open_ports.append(int(p))
+                except Exception:
+                    pass
+        open_ports = sorted(set(open_ports))
+        port_count = len(open_ports)
+        ports_str  = ",".join(str(p) for p in open_ports)
+
+        logger.info(
+            "[NETRIX] %s | [%s] Phase 1 complete — %d open port(s): %s",
+            datetime.now(timezone.utc).isoformat(), scan_id,
+            port_count, ports_str[:200],
+        )
+
+        if event_callback:
+            event_callback({
+                "event": "progress",
+                "progress": 35,
+                "ports_found": port_count,
+                "message": (
+                    f"Phase 1 done — {port_count} open port(s) found. "
+                    "Starting version/script detection…"
+                    if port_count else
+                    "Phase 1 done — no open ports found."
+                ),
+            })
+
+        # ════════════════════════════════════════════════════════
+        # Phase 2a — Version + OS + banner on discovered ports
+        # ════════════════════════════════════════════════════════
+        self._update_progress(
+            scan_id, 38, "running",
+            f"Phase 2/2 — version & service detection on {port_count} port(s)…",
+            callback,
+        )
+
+        if open_ports:
+            p2a_args = (
+                f"{p2_flags} {os_flag} "
+                f"-p {ports_str} {p2_scrip} "
+                f"--host-timeout {p2_to} --script-timeout 15s"
+            ).strip()
         else:
-            _ticker_thread = None
+            # No open ports found — fall back to a shallow sweep so we still
+            # record the host as "up" with whatever info nmap returns.
+            p2a_args = (
+                f"{p2_flags} --top-ports 100 "
+                f"--host-timeout {p2_to}"
+            ).strip()
+
+        logger.info(
+            "[NETRIX] %s | [%s] Phase 2a — version: nmap %s %s",
+            datetime.now(timezone.utc).isoformat(), scan_id, p2a_args, target,
+        )
+
+        _stop_p2a = threading.Event()
+        if callback:
+            threading.Thread(
+                target=_progress_ticker,
+                args=(scan_id, 38, 78,
+                      max(30, port_count * 8), callback, _stop_p2a,
+                      ["Fingerprinting services…", "Grabbing service banners…",
+                       "Detecting OS…", "Running NSE scripts…",
+                       "Resolving hostnames…", "Analysing service versions…"]),
+                daemon=True,
+            ).start()
 
         try:
-            # Check if nmap installed
-            if not self.nm:
-                raise Exception("Nmap not installed!")
-
-            # Set timeout based on scan type
-            timeouts = {
-                "quick": 60,        # 1 min per host
-                "stealth": 300,     # 5 min
-                "full": 900,        # 15 min
-                "aggressive": 600,  # 10 min
-                "vulnerability": 3600 # 60 min
-            }
-            timeout_arg = f" --host-timeout {timeouts.get(scan_type.value, 900)}s"
-
-            self.nm.scan(hosts=target, arguments=args + timeout_arg)
+            self.nm.scan(hosts=target, arguments=p2a_args)
         except nmap.PortScannerError as e:
-            _stop_ticker.set()
-            error = str(e)
-            if "root" in error.lower() or \
-               "admin" in error.lower():
-                raise Exception(
-                    "Need Admin rights! "
-                    "Run as Administrator."
-                )
-            raise Exception(f"Nmap error: {e}")
-
+            _stop_p2a.set()
+            raise Exception(f"Version scan failed: {e}")
         except Exception as e:
-            _stop_ticker.set()
-            raise Exception(f"Scan failed: {e}")
-
+            _stop_p2a.set()
+            raise Exception(f"Version scan failed: {e}")
         finally:
-            # Always stop the ticker when nmap exits (success or failure)
-            _stop_ticker.set()
+            _stop_p2a.set()
+
+        # If Phase 2a returned 0 hosts (firewall ate the probes), fall back
+        # to Phase 1 results so we at least record the host + open ports.
+        p2a_hosts = self.nm.all_hosts() if self.nm else []
+        if not p2a_hosts and p1_hosts:
+            logger.warning(
+                "[NETRIX] [%s] Phase 2a returned 0 hosts — "
+                "using Phase 1 results for %s", scan_id, target,
+            )
+            self.nm = nm_disc
+
+        # ════════════════════════════════════════════════════════
+        # Phase 2b — TCP-connect banner retry when -sV got nothing
+        # (common against internet hosts that filter SYN-based probes)
+        # Also runs when Phase 2a returned 0 hosts (firewall blocked all
+        # SYN probes) — we still need version data from TCP-connect.
+        # ════════════════════════════════════════════════════════
+        if ports_str:
+            has_version = any(
+                (self.nm[h].get(proto, {}).get(str(p), {}).get("product") or
+                 self.nm[h].get(proto, {}).get(str(p), {}).get("version"))
+                for h in self.nm.all_hosts()
+                for proto in ("tcp", "udp")
+                for p in (self.nm[h].get(proto) or {})
+            )
+            if not has_version:
+                logger.info(
+                    "[NETRIX] [%s] Phase 2a got no version data — "
+                    "retrying with TCP-connect + banner script on %s",
+                    scan_id, target,
+                )
+                nm_retry = nmap.PortScanner()
+                retry_args = (
+                    f"-sT -sV --version-intensity 9 -Pn -T4 --open "
+                    f"-p {ports_str} --script=banner,http-title,"
+                    f"http-server-header,ssh-hostkey,ftp-anon "
+                    f"--host-timeout {p2_to} --script-timeout 10s"
+                )
+                _stop_p2b = threading.Event()
+                if callback:
+                    threading.Thread(
+                        target=_progress_ticker,
+                        args=(scan_id, 79, 81, max(30, port_count * 8),
+                              callback, _stop_p2b,
+                              ["TCP-connect retry — probing services…",
+                               "Grabbing service banners…",
+                               "Fingerprinting open ports (TCP)…"]),
+                        daemon=True,
+                    ).start()
+                try:
+                    nm_retry.scan(hosts=target, arguments=retry_args)
+                    for h in nm_retry.all_hosts():
+                        if h not in self.nm.all_hosts():
+                            continue
+                        for proto in ("tcp", "udp"):
+                            for port_n, port_d in (nm_retry[h].get(proto) or {}).items():
+                                existing = self.nm[h].get(proto, {}).get(port_n, {})
+                                if not existing.get("product") and port_d.get("product"):
+                                    existing["product"] = port_d["product"]
+                                if not existing.get("version") and port_d.get("version"):
+                                    existing["version"] = port_d["version"]
+                                # Last resort: raw banner text
+                                banner = (port_d.get("script") or {}).get("banner", "")
+                                if banner and not existing.get("product"):
+                                    parsed = self._parse_banner(banner)
+                                    if parsed:
+                                        existing["product"] = parsed["product"]
+                                        existing["version"] = parsed.get("version", "")
+                                # Merge any script output (http-title etc.)
+                                for sname, sout in (port_d.get("script") or {}).items():
+                                    if existing.get("script") is None:
+                                        existing["script"] = {}
+                                    if sname not in existing["script"]:
+                                        existing["script"][sname] = sout
+                except Exception as retry_err:
+                    logger.debug(
+                        "[NETRIX] [%s] Banner retry failed (non-fatal): %s",
+                        scan_id, retry_err,
+                    )
+                finally:
+                    _stop_p2b.set()
 
         self._update_progress(
-            scan_id, 70, "running",
-            "✅ Nmap finished — parsing results…",
+            scan_id, 82, "running",
+            "Parsing results and calculating risk scores…",
             callback,
         )
 
-        # ── Parse results ────────────────────────────────────────
+        # ════════════════════════════════════════════════════════
+        # Parse & build summary
+        # ════════════════════════════════════════════════════════
         hosts = self._parse_results(scan_id, event_callback=event_callback)
 
         self._update_progress(
-            scan_id, 90, "running",
-            f"Parsed {len(hosts)} host(s) — calculating risk scores",
+            scan_id, 92, "running",
+            f"Parsed {len(hosts)} host(s) — finalising…",
             callback,
         )
 
         completed_at = datetime.now(timezone.utc)
         duration = (completed_at - started_at).total_seconds()
 
-        # ── Retrieve nmap metadata ───────────────────────────────
-        nmap_command = self.nm.command_line() if hasattr(self.nm, "command_line") else f"nmap {args} {target}"
+        try:
+            nmap_command = self.nm.command_line()
+        except Exception:
+            nmap_command = f"nmap {p2a_args} {target}"
 
         try:
-            nmap_version = self.nm.nmap_version()
-            nmap_version_str = ".".join(str(v) for v in nmap_version) if isinstance(nmap_version, tuple) else str(nmap_version)
+            nmap_ver = self.nm.nmap_version()
+            nmap_ver_str = (
+                ".".join(str(v) for v in nmap_ver)
+                if isinstance(nmap_ver, tuple) else str(nmap_ver)
+            )
         except Exception:
-            nmap_version_str = "unknown"
+            nmap_ver_str = "unknown"
 
-        # ── Build summary ────────────────────────────────────────
-        hosts_up = sum(1 for h in hosts if h.status == "up")
-        hosts_down = len(hosts) - hosts_up
+        hosts_up         = sum(1 for h in hosts if h.status == "up")
         total_open_ports = sum(h.open_ports_count for h in hosts)
-        total_vulns = sum(len(h.vulnerabilities_found) for h in hosts)
-        critical_hosts = sum(1 for h in hosts if h.risk_level == "critical")
-        high_risk_hosts = sum(1 for h in hosts if h.risk_level == "high")
-
-        profile_desc = ""
-        if scan_type != ScanType.CUSTOM:
-            prof = SCAN_PROFILES.get(scan_type)
-            profile_desc = prof.get("time", "") if prof else ""
+        total_vulns      = sum(len(h.vulnerabilities_found) for h in hosts)
+        critical_hosts   = sum(1 for h in hosts if h.risk_level == "critical")
+        high_risk_hosts  = sum(1 for h in hosts if h.risk_level == "high")
 
         summary = ScanSummary(
             scan_id=scan_id,
             target=target,
             scan_type=scan_type.value,
-            scan_profile=profile_desc,
+            scan_profile=profile_time,
             nmap_command=nmap_command,
-            nmap_version=nmap_version_str,
+            nmap_version=nmap_ver_str,
             started_at=started_at.isoformat(),
             completed_at=completed_at.isoformat(),
             duration_seconds=round(duration, 2),
             total_hosts=len(hosts),
             hosts_up=hosts_up,
-            hosts_down=hosts_down,
+            hosts_down=len(hosts) - hosts_up,
             hosts=hosts,
             total_open_ports=total_open_ports,
             total_vulnerabilities=total_vulns,
             critical_hosts=critical_hosts,
             high_risk_hosts=high_risk_hosts,
-            scan_args_used=args,
+            scan_args_used=p2a_args,
         )
 
         self._update_progress(
             scan_id, 100, "completed",
-            f"Scan complete — {hosts_up} host(s) up, "
+            f"Scan complete — {hosts_up} host(s), "
             f"{total_open_ports} open port(s), {total_vulns} vuln(s)",
             callback,
         )
 
         logger.info(
-            "[NETRIX] %s | Scan %s complete — %d host(s), %d port(s), %d vuln(s) in %.1fs",
-            datetime.now(timezone.utc).isoformat(),
-            scan_id, len(hosts), total_open_ports, total_vulns, duration,
+            "[NETRIX] %s | [%s] %s scan complete — "
+            "%d host(s), %d port(s), %d vuln(s) in %.1fs",
+            datetime.now(timezone.utc).isoformat(), scan_id,
+            scan_type.value, len(hosts), total_open_ports, total_vulns, duration,
         )
 
+        return summary
+
+    # ─────────────────────────────────────
+    # Custom scan (single-pass, user-supplied args)
+    # ─────────────────────────────────────
+    def _run_custom_scan(
+        self,
+        target: str,
+        scan_id: str,
+        args: str,
+        callback: Optional[Callable],
+        event_callback: Optional[Callable],
+        started_at: datetime,
+    ) -> "ScanSummary":
+        """Single-pass scan with caller-supplied nmap arguments."""
+        self._update_progress(
+            scan_id, 5, "running",
+            f"Custom scan on {target}…",
+            callback,
+        )
+        logger.info(
+            "[NETRIX] %s | [%s] Custom scan: nmap %s %s",
+            datetime.now(timezone.utc).isoformat(), scan_id, args, target,
+        )
+
+        _stop = threading.Event()
+        if callback:
+            threading.Thread(
+                target=_progress_ticker,
+                args=(scan_id, 5, 80, 300, callback, _stop),
+                daemon=True,
+            ).start()
+
+        try:
+            self.nm.scan(hosts=target, arguments=args + " --host-timeout 600s")
+        except nmap.PortScannerError as e:
+            _stop.set()
+            err = str(e)
+            if "root" in err.lower() or "admin" in err.lower():
+                raise Exception("Need root privileges for this scan type.")
+            raise Exception(f"Custom scan error: {e}")
+        except Exception as e:
+            _stop.set()
+            raise Exception(f"Custom scan failed: {e}")
+        finally:
+            _stop.set()
+
+        self._update_progress(scan_id, 82, "running", "Parsing results…", callback)
+        hosts = self._parse_results(scan_id, event_callback=event_callback)
+
+        completed_at     = datetime.now(timezone.utc)
+        duration         = (completed_at - started_at).total_seconds()
+        hosts_up         = sum(1 for h in hosts if h.status == "up")
+        total_open_ports = sum(h.open_ports_count for h in hosts)
+        total_vulns      = sum(len(h.vulnerabilities_found) for h in hosts)
+
+        try:
+            nmap_ver = self.nm.nmap_version()
+            nmap_ver_str = (
+                ".".join(str(v) for v in nmap_ver)
+                if isinstance(nmap_ver, tuple) else str(nmap_ver)
+            )
+        except Exception:
+            nmap_ver_str = "unknown"
+
+        summary = ScanSummary(
+            scan_id=scan_id,
+            target=target,
+            scan_type="custom",
+            scan_profile="custom",
+            nmap_command=f"nmap {args} {target}",
+            nmap_version=nmap_ver_str,
+            started_at=started_at.isoformat(),
+            completed_at=completed_at.isoformat(),
+            duration_seconds=round(duration, 2),
+            total_hosts=len(hosts),
+            hosts_up=hosts_up,
+            hosts_down=len(hosts) - hosts_up,
+            hosts=hosts,
+            total_open_ports=total_open_ports,
+            total_vulnerabilities=total_vulns,
+            critical_hosts=sum(1 for h in hosts if h.risk_level == "critical"),
+            high_risk_hosts=sum(1 for h in hosts if h.risk_level == "high"),
+            scan_args_used=args,
+        )
+
+        self._update_progress(
+            scan_id, 100, "completed",
+            f"Custom scan complete — {hosts_up} host(s), {total_open_ports} port(s)",
+            callback,
+        )
         return summary
 
     # ─────────────────────────────────────
@@ -688,9 +1037,9 @@ class NmapEngine:
             )
             self.nm = nm_disc
 
-        # ── Retry: if hosts found but no product/version data detected,
-        #    try TCP connect + banner script with HTTP source port spoof.
-        if p2a_hosts and ports_str:
+        # ── Retry: if no product/version data detected (including when Phase 2a
+        #    returned 0 hosts due to firewall filtering), try TCP connect + banner.
+        if ports_str:
             has_version = any(
                 self.nm[h].get(proto, {}).get(str(p), {}).get("product") or
                 self.nm[h].get(proto, {}).get(str(p), {}).get("version")
@@ -1161,6 +1510,17 @@ class NmapEngine:
 
                     # NSE script output
                     nse_scripts = self._parse_nse_scripts(port_data)
+
+                    # Fallback: if -sV returned no product/version, try the
+                    # raw banner captured by the NSE banner script (present
+                    # whenever -sC or --script=banner was used).
+                    if not product:
+                        banner = nse_scripts.get("banner", "")
+                        if banner:
+                            parsed = self._parse_banner(banner)
+                            if parsed:
+                                product = parsed.get("product", "")
+                                version = parsed.get("version", version)
 
                     # Flags
                     is_critical = int(port_number) in CRITICAL_PORTS
