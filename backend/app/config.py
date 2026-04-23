@@ -83,15 +83,11 @@ class Settings(BaseSettings):
 
     @property
     def DATABASE_URL(self) -> str:
-        """
-        Build the full SQLAlchemy MySQL connection URL from individual
-        database settings.
-
-        Returns:
-            str: A mysql+pymysql:// connection string ready for SQLAlchemy.
-        """
+        from urllib.parse import quote_plus
+        user = quote_plus(self.MYSQL_USER)
+        password = quote_plus(self.MYSQL_PASSWORD)
         return (
-            f"mysql+pymysql://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}"
+            f"mysql+pymysql://{user}:{password}"
             f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
             f"?charset=utf8mb4"
         )
