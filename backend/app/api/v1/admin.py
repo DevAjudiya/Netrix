@@ -35,6 +35,7 @@ from app.schemas.admin import (
     AdminScanListResponse,
     AdminScanResponse,
     AdminStats,
+    AdminUserCreate,
     AdminUserListResponse,
     AdminUserResponse,
     AdminUserUpdate,
@@ -214,6 +215,52 @@ async def get_admin_stats(
         cve_count=cve_count,
         last_cve_sync=last_cve_sync,
     )
+
+
+@router.post(
+    "/users",
+    response_model=AdminUserResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new user account (admin)",
+)
+async def create_user(
+    body: AdminUserCreate,
+    request: Request,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Create a new user account with the given credentials and role."""
+    from app.services.auth_service import AuthService
+    from app.core.exceptions import AuthenticationException
+
+    if body.role not in ("admin", "analyst"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="role must be 'admin' or 'analyst'.",
+        )
+
+    try:
+        svc = AuthService(db)
+        user = svc.register_user(
+            username=body.username.strip(),
+            email=body.email.strip(),
+            password=body.password,
+        )
+        if body.role != "analyst":
+            user.role = body.role
+            db.commit()
+            db.refresh(user)
+    except AuthenticationException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.message,
+        )
+
+    logger.info(
+        "[AUDIT] Admin '%s' (ID %d) created user '%s' (ID %d) with role '%s'.",
+        admin.username, admin.id, user.username, user.id, user.role,
+    )
+    return _to_response(user, db)
 
 
 @router.patch(

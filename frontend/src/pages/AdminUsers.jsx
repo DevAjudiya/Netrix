@@ -4,7 +4,7 @@ import {
     Users, UserCheck, UserX, Shield, BarChart2,
     Search, ChevronLeft, ChevronRight, Edit2,
     Ban, Trash2, KeyRound, X, Check, AlertTriangle,
-    RefreshCw, Copy, ShieldPlus, ShieldMinus
+    RefreshCw, Copy, ShieldPlus, ShieldMinus, UserPlus, Eye, EyeOff
 } from 'lucide-react'
 import Layout from '../components/Layout'
 import { adminAPI } from '../services/api'
@@ -222,6 +222,128 @@ function PasswordResetModal({ username, tempPassword, onClose }) {
     )
 }
 
+// ── Add User Modal ────────────────────────────────────────────────────────
+
+function AddUserModal({ onClose, onCreated }) {
+    const [form, setForm] = useState({ username: '', email: '', password: '', role: 'analyst' })
+    const [showPw, setShowPw] = useState(false)
+    const [saving, setSaving] = useState(false)
+    const [error, setError] = useState('')
+
+    const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+    const handleCreate = async () => {
+        if (!form.username.trim() || !form.email.trim() || !form.password) {
+            setError('Username, email, and password are required.')
+            return
+        }
+        setSaving(true)
+        setError('')
+        try {
+            await adminAPI.createUser(form)
+            onCreated()
+        } catch (err) {
+            setError(err.response?.data?.detail || 'Failed to create user.')
+        } finally {
+            setSaving(false)
+        }
+    }
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <div className="bg-netrix-card border border-netrix-border rounded-2xl w-full max-w-md shadow-2xl">
+                <div className="flex items-center justify-between p-5 border-b border-netrix-border/50">
+                    <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-netrix-accent/15 flex items-center justify-center">
+                            <UserPlus className="w-5 h-5 text-netrix-accent" />
+                        </div>
+                        <h2 className="text-netrix-text font-semibold text-lg">Add New User</h2>
+                    </div>
+                    <button onClick={onClose} className="text-netrix-muted hover:text-netrix-text transition-colors">
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
+
+                <div className="p-5 space-y-4">
+                    <div>
+                        <label className="block text-sm text-netrix-muted mb-1.5">Username</label>
+                        <input
+                            type="text"
+                            value={form.username}
+                            onChange={e => set('username', e.target.value)}
+                            placeholder="e.g. john_doe"
+                            className="w-full bg-netrix-bg border border-netrix-border rounded-lg px-3 py-2 text-netrix-text text-sm focus:outline-none focus:border-netrix-accent"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm text-netrix-muted mb-1.5">Email</label>
+                        <input
+                            type="email"
+                            value={form.email}
+                            onChange={e => set('email', e.target.value)}
+                            placeholder="john@example.com"
+                            className="w-full bg-netrix-bg border border-netrix-border rounded-lg px-3 py-2 text-netrix-text text-sm focus:outline-none focus:border-netrix-accent"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm text-netrix-muted mb-1.5">Password</label>
+                        <div className="relative">
+                            <input
+                                type={showPw ? 'text' : 'password'}
+                                value={form.password}
+                                onChange={e => set('password', e.target.value)}
+                                placeholder="Min 8 characters"
+                                className="w-full bg-netrix-bg border border-netrix-border rounded-lg px-3 py-2 pr-10 text-netrix-text text-sm focus:outline-none focus:border-netrix-accent"
+                            />
+                            <button
+                                type="button"
+                                onClick={() => setShowPw(v => !v)}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-netrix-muted hover:text-netrix-text transition-colors"
+                            >
+                                {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <label className="block text-sm text-netrix-muted mb-1.5">Role</label>
+                        <select
+                            value={form.role}
+                            onChange={e => set('role', e.target.value)}
+                            className="w-full bg-netrix-bg border border-netrix-border rounded-lg px-3 py-2 text-netrix-text text-sm focus:outline-none focus:border-netrix-accent"
+                        >
+                            <option value="analyst">Analyst</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+
+                    {error && (
+                        <p className="text-red-400 text-sm flex items-center gap-2">
+                            <AlertTriangle className="w-4 h-4 flex-shrink-0" />{error}
+                        </p>
+                    )}
+                </div>
+
+                <div className="flex gap-3 p-5 border-t border-netrix-border/50">
+                    <button
+                        onClick={onClose}
+                        className="flex-1 px-4 py-2 rounded-lg border border-netrix-border text-netrix-muted hover:text-netrix-text hover:border-netrix-accent/50 transition-all text-sm"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        onClick={handleCreate}
+                        disabled={saving}
+                        className="flex-1 px-4 py-2 rounded-lg bg-netrix-accent text-white font-medium hover:bg-netrix-accent/90 transition-all text-sm disabled:opacity-50 flex items-center justify-center gap-2"
+                    >
+                        {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
+                        {saving ? 'Creating…' : 'Create User'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    )
+}
+
 // ── Main Page ──────────────────────────────────────────────────────────────
 
 export default function AdminUsers() {
@@ -236,6 +358,7 @@ export default function AdminUsers() {
     const [statsLoading, setStatsLoading] = useState(true)
     const [error, setError] = useState('')
 
+    const [showAddUser, setShowAddUser] = useState(false)
     const [editUser, setEditUser] = useState(null)
     const [deleteConfirm, setDeleteConfirm] = useState(null)  // user to delete
     const [deleting, setDeleting] = useState(false)
@@ -374,7 +497,14 @@ export default function AdminUsers() {
                 <div className="bg-netrix-card border border-netrix-border/50 rounded-2xl overflow-hidden">
                     {/* Toolbar */}
                     <div className="p-4 border-b border-netrix-border/50 flex flex-col sm:flex-row items-start sm:items-center gap-3">
-                        <form onSubmit={handleSearch} className="flex-1 flex gap-2">
+                        <button
+                        onClick={() => setShowAddUser(true)}
+                        className="flex items-center gap-2 px-4 py-2 rounded-lg bg-netrix-accent text-white text-sm font-medium hover:bg-netrix-accent/90 transition-all flex-shrink-0"
+                    >
+                        <UserPlus className="w-4 h-4" />
+                        Add User
+                    </button>
+                    <form onSubmit={handleSearch} className="flex-1 flex gap-2">
                             <div className="relative flex-1 max-w-sm">
                                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-netrix-muted" />
                                 <input
@@ -526,6 +656,18 @@ export default function AdminUsers() {
                     )}
                 </div>
             </div>
+
+            {/* Add User Modal */}
+            {showAddUser && (
+                <AddUserModal
+                    onClose={() => setShowAddUser(false)}
+                    onCreated={() => {
+                        setShowAddUser(false)
+                        fetchUsers()
+                        fetchStats()
+                    }}
+                />
+            )}
 
             {/* Edit Modal */}
             {editUser && (

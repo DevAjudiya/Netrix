@@ -26,6 +26,15 @@ class AdminUserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AdminUserCreate(BaseModel):
+    """Body for POST /admin/users — admin creates a new account."""
+
+    username: str
+    email: str
+    password: str
+    role: str = "analyst"   # "admin" | "analyst"
+
+
 class AdminUserUpdate(BaseModel):
     """Fields an admin may change on any user account."""
 

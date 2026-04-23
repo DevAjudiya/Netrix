@@ -105,6 +105,7 @@ export const hostsAPI = {
 export const adminAPI = {
   stats: () => api.get('/admin/stats'),
   listUsers: (params) => api.get('/admin/users', { params }),
+  createUser: (data) => api.post('/admin/users', data),
   updateUser: (userId, data) => api.patch(`/admin/users/${userId}`, data),
   deleteUser: (userId) => api.delete(`/admin/users/${userId}`),
   resetPassword: (userId) => api.post(`/admin/users/${userId}/reset-password`),
