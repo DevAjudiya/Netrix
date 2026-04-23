@@ -20,6 +20,15 @@ function fmtDateTime(iso) {
     })
 }
 
+function fmtRelative(iso) {
+    if (!iso) return ''
+    const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
+    if (secs < 10) return 'just now'
+    if (secs < 60) return `${secs}s ago`
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
+    return `${Math.floor(secs / 3600)}h ago`
+}
+
 const SEV_STYLES = {
     critical: 'bg-red-500/15 text-red-400 border border-red-500/30',
     high:     'bg-orange-500/15 text-orange-400 border border-orange-500/30',
@@ -413,9 +422,9 @@ export default function AdminCVE() {
     const addLog = (type, msg) =>
         setLog(prev => [{ type, msg, ts: Date.now() }, ...prev].slice(0, 20))
 
-    const fetchStatus = useCallback(async (quiet = false) => {
+    const fetchStatus = useCallback(async (quiet = false, force = false) => {
         try {
-            const res = await adminAPI.cveStatus()
+            const res = await adminAPI.cveStatus(force)
             setStatus(res.data)
             setError(null)
             if (syncing && !res.data.sync_in_progress) {
@@ -434,6 +443,14 @@ export default function AdminCVE() {
         intervalRef.current = setInterval(() => fetchStatus(true), 30_000)
         return () => clearInterval(intervalRef.current)
     }, [fetchStatus])
+
+    // Fast-poll while background NVD check is in progress
+    useEffect(() => {
+        if (status?.nvd_check_pending) {
+            const t = setInterval(() => fetchStatus(true), 4_000)
+            return () => clearInterval(t)
+        }
+    }, [status?.nvd_check_pending, fetchStatus])
 
     useEffect(() => {
         if (status?.sync_in_progress) {
@@ -486,7 +503,7 @@ export default function AdminCVE() {
                         </p>
                     </div>
                     <button
-                        onClick={() => fetchStatus()}
+                        onClick={() => fetchStatus(false, true)}
                         className="flex items-center gap-2 px-3 py-2 rounded-lg bg-netrix-accent/10 text-netrix-accent hover:bg-netrix-accent/20 transition-colors text-sm font-medium"
                     >
                         <RefreshCw className="w-4 h-4" />
@@ -533,11 +550,17 @@ export default function AdminCVE() {
                             accent="amber"
                         />
                         <StatCard
-                            icon={status.nvd_api_online ? Wifi : WifiOff}
+                            icon={status.nvd_check_pending ? Loader2 : status.nvd_api_online ? Wifi : WifiOff}
                             label="NVD API"
-                            value={status.nvd_api_online ? 'Online' : 'Offline'}
-                            sub="services.nvd.nist.gov"
-                            accent={status.nvd_api_online ? 'green' : 'red'}
+                            value={status.nvd_check_pending ? 'Checking…' : status.nvd_api_online ? 'Online' : 'Offline'}
+                            sub={
+                                status.nvd_check_pending
+                                    ? 'Pinging services.nvd.nist.gov'
+                                    : status.nvd_api_online
+                                        ? `Online · checked ${fmtRelative(status.nvd_last_checked)}`
+                                        : `Offline DB active${status.nvd_last_checked ? ' · checked ' + fmtRelative(status.nvd_last_checked) : ''}`
+                            }
+                            accent={status.nvd_check_pending ? 'amber' : status.nvd_api_online ? 'green' : 'red'}
                         />
                     </div>
                 )}
@@ -595,7 +618,7 @@ export default function AdminCVE() {
 
                         <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs">
                             <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-                            <span>This queries the NVD API for every service port and may take several minutes.</span>
+                            <span>Matches against the offline DB first. NVD API is only queried for services with no offline results.</span>
                         </div>
 
                         <button

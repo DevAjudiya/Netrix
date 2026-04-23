@@ -794,18 +794,47 @@ async def admin_metrics(
 # ── CVE Control ────────────────────────────────────────────────────────────
 
 
+_NVD_CHECK_TTL = 300  # cache result for 5 minutes
+
+
 def _check_nvd_connectivity(nvd_url: str) -> bool:
-    """Synchronous NVD ping — run in a thread to avoid blocking the event loop."""
+    """Synchronous NVD ping — called in a background thread, never blocks a request.
+
+    NVD/Cloudflare takes 12-20s to respond. timeout=25 gives it enough room.
+    Sends the API key when configured for the authenticated rate-limit tier.
+    """
+    from app.config import get_settings
+    cfg = get_settings()
+    headers = {"User-Agent": "Netrix/1.0"}
+    if cfg.NVD_API_KEY:
+        headers["apiKey"] = cfg.NVD_API_KEY
     try:
         resp = _requests.get(
             nvd_url,
             params={"resultsPerPage": 1},
-            timeout=5,
-            headers={"User-Agent": "Netrix/1.0"},
+            timeout=25,
+            headers=headers,
         )
         return resp.status_code == 200
     except Exception:
         return False
+
+
+async def _bg_nvd_check(nvd_url: str, redis) -> None:
+    """Fire-and-forget background coroutine: ping NVD and write result to Redis."""
+    try:
+        result = await asyncio.to_thread(_check_nvd_connectivity, nvd_url)
+        if redis:
+            now = datetime.now(timezone.utc).isoformat()
+            await redis.set("netrix:cve:nvd_online", "1" if result else "0", ex=_NVD_CHECK_TTL)
+            await redis.set("netrix:cve:nvd_last_checked", now, ex=_NVD_CHECK_TTL)
+            await redis.delete("netrix:cve:nvd_checking")
+    except Exception:
+        if redis:
+            try:
+                await redis.delete("netrix:cve:nvd_checking")
+            except Exception:
+                pass
 
 
 @router.get(
@@ -816,12 +845,16 @@ def _check_nvd_connectivity(nvd_url: str) -> bool:
 )
 async def cve_status(
     request: Request,
+    force: bool = False,
     _admin=Depends(get_admin_user),
 ):
     """
-    Returns the current state of the offline CVE database, the last NVD
-    sync timestamp, whether a sync is currently in progress, and a live
-    NVD API connectivity check.
+    Returns the current state of the offline CVE database and NVD connectivity.
+
+    The NVD ping runs as a background task so this endpoint always responds
+    immediately. Pass ?force=true to bust the cache and re-check right now.
+    While the background check is running, nvd_check_pending=true is returned
+    so the frontend can show a 'Checking…' state and auto-poll.
     """
     from app.config import get_settings
     from app.scanner.vuln_engine import CVEEngine
@@ -837,30 +870,65 @@ async def cve_status(
 
     if redis:
         try:
-            raw_sync = await redis.get("netrix:cve:last_sync")
-            if raw_sync:
-                last_sync = datetime.fromisoformat(raw_sync)
+            raw = await redis.get("netrix:cve:last_sync")
+            if raw:
+                last_sync = datetime.fromisoformat(raw)
         except Exception:
             pass
         try:
-            raw_count = await redis.get("netrix:cve:last_sync_count")
-            if raw_count:
-                cves_added_last_sync = int(raw_count)
+            raw = await redis.get("netrix:cve:last_sync_count")
+            if raw:
+                cves_added_last_sync = int(raw)
         except Exception:
             pass
         try:
-            flag = await redis.get("netrix:cve:sync_in_progress")
-            sync_in_progress = bool(flag)
+            sync_in_progress = bool(await redis.get("netrix:cve:sync_in_progress"))
         except Exception:
             pass
 
-    nvd_api_online = await asyncio.to_thread(_check_nvd_connectivity, settings.NVD_API_URL)
+    # ── NVD connectivity — never blocks the response ──────────────────────
+    nvd_api_online = False
+    nvd_last_checked: Optional[datetime] = None
+    nvd_check_pending = False
+    cached_online = None
+
+    if force and redis:
+        # Bust the cache so the background task re-pings immediately
+        try:
+            await redis.delete("netrix:cve:nvd_online", "netrix:cve:nvd_last_checked", "netrix:cve:nvd_checking")
+        except Exception:
+            pass
+
+    if redis:
+        try:
+            cached_online = await redis.get("netrix:cve:nvd_online")
+            cached_ts = await redis.get("netrix:cve:nvd_last_checked")
+            checking = await redis.get("netrix:cve:nvd_checking")
+            if cached_online is not None:
+                nvd_api_online = cached_online == "1"
+                if cached_ts:
+                    nvd_last_checked = datetime.fromisoformat(cached_ts)
+            nvd_check_pending = bool(checking)
+        except Exception:
+            pass
+
+    # No cached result and no check already running → spawn background ping
+    if cached_online is None and not nvd_check_pending:
+        nvd_check_pending = True
+        if redis:
+            try:
+                await redis.set("netrix:cve:nvd_checking", "1", ex=60)
+            except Exception:
+                pass
+        asyncio.create_task(_bg_nvd_check(settings.NVD_API_URL, redis))
 
     return CVEStatusResponse(
         total_cves=total_cves,
         last_sync=last_sync,
         cves_added_last_sync=cves_added_last_sync,
         nvd_api_online=nvd_api_online,
+        nvd_last_checked=nvd_last_checked,
+        nvd_check_pending=nvd_check_pending,
         sync_in_progress=sync_in_progress,
     )
 

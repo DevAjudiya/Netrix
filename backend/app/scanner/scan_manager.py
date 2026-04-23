@@ -499,8 +499,13 @@ class ScanManager:
                 user_id=user_id,
             )
 
-            # ── NVD API lookup by detected product/version ────────
-            if scan_db_id:
+            # ── CVE lookup + enrichment (skipped for quick / stealth) ──
+            # Quick and Stealth are port-discovery scans only — no vuln matching.
+            # Full, Aggressive, and Vulnerability scans get full CVE analysis.
+            _vuln_scan_types = {"full", "aggressive", "vulnerability", "custom"}
+            _do_vuln = scan_type.value in _vuln_scan_types
+
+            if scan_db_id and _do_vuln:
                 try:
                     from app.services.cve_service import fetch_nvd_cves_for_scan
                     nvd_result = fetch_nvd_cves_for_scan(
@@ -517,8 +522,7 @@ class ScanManager:
                         "[NETRIX] NVD lookup failed (non-fatal): %s", str(nvd_err)
                     )
 
-            # ── Enrich CVE data post-save ─────────────────────────
-            if scan_db_id:
+            if scan_db_id and _do_vuln:
                 try:
                     from app.services.cve_service import enrich_scan_vulnerabilities
                     enrich_result = enrich_scan_vulnerabilities(
@@ -534,6 +538,12 @@ class ScanManager:
                         "[NETRIX] Post-scan enrichment failed (non-fatal): %s",
                         str(enrich_err),
                     )
+
+            if scan_db_id and not _do_vuln:
+                logger.info(
+                    "[NETRIX] Scan %d (%s) — CVE matching skipped (port-discovery only)",
+                    scan_db_id, scan_type.value,
+                )
 
             # ── Query real vuln counts from DB after enrichment ───
             # summary.total_vulnerabilities only counts NSE-detected vulns.

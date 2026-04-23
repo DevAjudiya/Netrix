@@ -10,9 +10,10 @@ import re
 import threading
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -42,32 +43,69 @@ class NVDRateLimiter:
         self._timestamps: deque = deque()
 
     def acquire(self) -> None:
-        """Block the calling thread until a request slot is available."""
-        with self._lock:
-            now = time.time()
-            # Evict timestamps outside the current window
-            while self._timestamps and now - self._timestamps[0] >= self.window:
-                self._timestamps.popleft()
+        """Block the calling thread until a request slot is available.
 
-            if len(self._timestamps) >= self.max_requests:
-                # Sleep until the oldest request expires, then re-evict
+        The lock is released during any sleep so that other threads can
+        proceed concurrently instead of all piling up behind one sleeper.
+        """
+        while True:
+            with self._lock:
+                now = time.time()
+                while self._timestamps and now - self._timestamps[0] >= self.window:
+                    self._timestamps.popleft()
+                if len(self._timestamps) < self.max_requests:
+                    self._timestamps.append(time.time())
+                    return
                 sleep_for = self.window - (now - self._timestamps[0]) + 0.1
                 logger.debug(
                     "[NETRIX] NVD rate limiter sleeping %.1fs (%d/%d slots used)",
                     sleep_for, len(self._timestamps), self.max_requests,
                 )
-                time.sleep(max(0.0, sleep_for))
-                now = time.time()
-                while self._timestamps and now - self._timestamps[0] >= self.window:
-                    self._timestamps.popleft()
-
-            self._timestamps.append(time.time())
+            # Sleep *outside* the lock so concurrent threads aren't blocked.
+            time.sleep(max(0.05, sleep_for))
 
 
 # Module-level singleton — shared across all threads and CVEEngine instances.
-# Default: 4 req/30s (NVD anonymous limit is 5/30s — keep 1 buffer).
-# Upgraded to 45/30s in CVEEngine.__init__ when an API key is configured.
-_nvd_limiter = NVDRateLimiter(max_requests=4, window=30.0)
+# Initialise with the right limit immediately based on whether an API key is
+# configured, so the correct rate applies before the first CVEEngine is created.
+def _build_nvd_limiter() -> NVDRateLimiter:
+    try:
+        from app.config import get_settings
+        key = get_settings().NVD_API_KEY
+        return NVDRateLimiter(max_requests=45 if key else 4, window=30.0)
+    except Exception:
+        return NVDRateLimiter(max_requests=4, window=30.0)
+
+_nvd_limiter = _build_nvd_limiter()
+
+# ─────────────────────────────────────────
+# In-memory CVE detail cache (module-level, shared across instances)
+# ─────────────────────────────────────────
+_CVE_CACHE_TTL = 3600          # successful lookups cached for 1 hour
+_CVE_CACHE_NEGATIVE_TTL = 300  # "not found" cached for 5 minutes
+
+@dataclass
+class _CacheEntry:
+    detail: Optional["CVEDetail"]
+    expires: float
+
+_cve_cache: Dict[str, _CacheEntry] = {}
+_cve_cache_lock = threading.Lock()
+
+
+def _cache_get(cve_id: str) -> Tuple[bool, Optional["CVEDetail"]]:
+    """Return (hit, detail). detail may be None for a cached negative result."""
+    with _cve_cache_lock:
+        entry = _cve_cache.get(cve_id)
+        if entry and time.time() < entry.expires:
+            return True, entry.detail
+        return False, None
+
+
+def _cache_set(cve_id: str, detail: Optional["CVEDetail"]) -> None:
+    ttl = _CVE_CACHE_TTL if detail is not None else _CVE_CACHE_NEGATIVE_TTL
+    with _cve_cache_lock:
+        _cve_cache[cve_id] = _CacheEntry(detail=detail, expires=time.time() + ttl)
 
 
 # ─────────────────────────────────────────
@@ -120,6 +158,11 @@ class CVEDetail:
     references: List[str] = field(default_factory=list)
     source: str = "offline_db"
     affected_products: List[str] = field(default_factory=list)
+    # Extended NVD fields
+    cwe_ids: List[str] = field(default_factory=list)
+    exploitability_score: float = 0.0
+    impact_score: float = 0.0
+    last_modified: str = ""
 
 
 @dataclass
@@ -150,8 +193,6 @@ class CVEEngine:
         self.session.headers.update({"User-Agent": "Netrix/1.0"})
         if self.settings.NVD_API_KEY:
             self.session.headers["apiKey"] = self.settings.NVD_API_KEY
-            # With an API key NVD allows 50 req/30s — use 45 as safe limit
-            _nvd_limiter.max_requests = 45
         self._offline_db: Dict[str, Dict] = {}
         self.load_offline_database()
         logger.info("[NETRIX] CVE Engine initialized")
@@ -183,12 +224,15 @@ class CVEEngine:
     # ─────────────────────────────────────
     def fetch_cve_from_nvd(self, cve_id: str) -> Optional[CVEDetail]:
         """Fetch a single CVE from the NVD API v2.0."""
+        hit, cached = _cache_get(cve_id)
+        if hit:
+            return cached
         try:
             self._rate_limit()
             resp = self.session.get(
                 self.settings.NVD_API_URL,
                 params={"cveId": cve_id},
-                timeout=30,
+                timeout=(5, 25),  # (connect, read)
             )
             if resp.status_code == 429:
                 logger.warning("[NETRIX] NVD rate-limited, waiting 6s")
@@ -196,16 +240,20 @@ class CVEEngine:
                 resp = self.session.get(
                     self.settings.NVD_API_URL,
                     params={"cveId": cve_id},
-                    timeout=30,
+                    timeout=(5, 25),
                 )
             if resp.status_code != 200:
                 logger.warning("[NETRIX] NVD returned HTTP %d for %s", resp.status_code, cve_id)
+                _cache_set(cve_id, None)
                 return None
             data = resp.json()
             vulns = data.get("vulnerabilities", [])
             if not vulns:
+                _cache_set(cve_id, None)
                 return None
-            return self._parse_nvd_item(vulns[0], source="nvd_api")
+            detail = self._parse_nvd_item(vulns[0], source="nvd_api")
+            _cache_set(cve_id, detail)
+            return detail
         except requests.RequestException as exc:
             logger.warning("[NETRIX] NVD request failed for %s: %s", cve_id, exc)
             return None
@@ -218,12 +266,16 @@ class CVEEngine:
     # ─────────────────────────────────────
     def search_cves_by_keyword(self, keyword: str, max_results: int = 10) -> List[CVEDetail]:
         """Search CVEs by product/service keyword via NVD API."""
+        cache_key = f"kw:{keyword}:{max_results}"
+        hit, cached = _cache_get(cache_key)
+        if hit:
+            return cached or []
         try:
             self._rate_limit()
             resp = self.session.get(
                 self.settings.NVD_API_URL,
                 params={"keywordSearch": keyword, "resultsPerPage": max_results},
-                timeout=30,
+                timeout=(5, 25),
             )
             if resp.status_code == 429:
                 logger.warning("[NETRIX] NVD rate-limited on keyword search")
@@ -231,7 +283,7 @@ class CVEEngine:
                 resp = self.session.get(
                     self.settings.NVD_API_URL,
                     params={"keywordSearch": keyword, "resultsPerPage": max_results},
-                    timeout=30,
+                    timeout=(5, 25),
                 )
             if resp.status_code != 200:
                 logger.warning("[NETRIX] NVD keyword search returned HTTP %d", resp.status_code)
@@ -242,6 +294,7 @@ class CVEEngine:
                 detail = self._parse_nvd_item(item, source="nvd_api")
                 if detail:
                     results.append(detail)
+            _cache_set(cache_key, results if results else None)
             return results
         except Exception as exc:
             logger.warning("[NETRIX] NVD keyword search failed: %s", exc)
@@ -252,12 +305,16 @@ class CVEEngine:
     # ─────────────────────────────────────
     def search_cves_by_cpe(self, cpe_string: str) -> List[CVEDetail]:
         """Search CVEs using a CPE string from Nmap."""
+        cache_key = f"cpe:{cpe_string}"
+        hit, cached = _cache_get(cache_key)
+        if hit:
+            return cached or []
         try:
             self._rate_limit()
             resp = self.session.get(
                 self.settings.NVD_API_URL,
                 params={"cpeName": cpe_string, "resultsPerPage": 10},
-                timeout=30,
+                timeout=(5, 25),
             )
             if resp.status_code != 200:
                 return []
@@ -267,6 +324,7 @@ class CVEEngine:
                 detail = self._parse_nvd_item(item, source="nvd_api")
                 if detail:
                     results.append(detail)
+            _cache_set(cache_key, results if results else None)
             return results
         except Exception as exc:
             logger.warning("[NETRIX] NVD CPE search failed: %s", exc)
@@ -284,14 +342,26 @@ class CVEEngine:
             metrics = cve_data.get("metrics", {})
             cvss_score = 0.0
             cvss_vector = ""
+            exploitability_score = 0.0
+            impact_score = 0.0
             for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
                 mlist = metrics.get(key, [])
                 if mlist:
-                    cd = mlist[0].get("cvssData", {})
+                    entry = mlist[0]
+                    cd = entry.get("cvssData", {})
                     cvss_score = cd.get("baseScore", 0.0)
                     cvss_vector = cd.get("vectorString", "")
+                    exploitability_score = entry.get("exploitabilityScore", 0.0)
+                    impact_score = entry.get("impactScore", 0.0)
                     break
+            cwe_ids: List[str] = []
+            for weakness in cve_data.get("weaknesses", []):
+                for wd in weakness.get("description", []):
+                    val = wd.get("value", "")
+                    if val.startswith("CWE-"):
+                        cwe_ids.append(val)
             published = cve_data.get("published", "")
+            last_modified = cve_data.get("lastModified", "")
             refs = [r.get("url", "") for r in cve_data.get("references", [])]
             affected: List[str] = []
             for cfg in cve_data.get("configurations", []):
@@ -310,6 +380,10 @@ class CVEEngine:
                 references=refs,
                 source=source,
                 affected_products=affected,
+                cwe_ids=cwe_ids,
+                exploitability_score=exploitability_score,
+                impact_score=impact_score,
+                last_modified=last_modified,
             )
         except Exception as exc:
             logger.debug("[NETRIX] Failed to parse NVD item: %s", exc)
@@ -483,49 +557,66 @@ class CVEEngine:
     # ─────────────────────────────────────
     # Match vulnerabilities to scan results
     # ─────────────────────────────────────
+    def _match_one_service(self, svc: Any) -> Optional[VulnerabilityMatch]:
+        """Match CVEs for a single service object. Safe to call from threads."""
+        svc_name = getattr(svc, "product", "") or getattr(svc, "service_name", "")
+        svc_version = getattr(svc, "version", "")
+        port = getattr(svc, "port", 0)
+        protocol = getattr(svc, "protocol", "tcp")
+        cpe = getattr(svc, "cpe", "")
+        logger.info("[NETRIX] Checking CVEs for %s %s on port %d", svc_name, svc_version, port)
+        cve_list = self.match_service_to_cves(svc_name, svc_version, cpe)
+        nse_scripts = getattr(svc, "nse_scripts", {})
+        nse_findings: List[str] = []
+        if nse_scripts:
+            nse_cves = self.parse_nse_vulnerabilities(nse_scripts)
+            existing_ids = {c.cve_id for c in cve_list}
+            for nc in nse_cves:
+                if nc.cve_id not in existing_ids:
+                    cve_list.append(nc)
+                    existing_ids.add(nc.cve_id)
+            nse_findings = list(nse_scripts.keys())
+        if not cve_list:
+            return None
+        highest_cvss = max((c.cvss_score for c in cve_list), default=0.0)
+        for cve in cve_list:
+            logger.info(
+                "[NETRIX] CVE Found: %s | Severity: %s | Score: %.1f",
+                cve.cve_id, cve.severity, cve.cvss_score,
+            )
+        return VulnerabilityMatch(
+            service_name=svc_name,
+            service_version=svc_version,
+            port=port,
+            protocol=protocol,
+            cve_details=cve_list,
+            nse_findings=nse_findings,
+            total_vulnerabilities=len(cve_list),
+            highest_severity=self._score_to_severity(highest_cvss),
+            highest_cvss=highest_cvss,
+        )
+
     def match_vulnerabilities(self, scan_summary: Any) -> List[VulnerabilityMatch]:
-        """Match CVEs to all services found in a scan."""
+        """Match CVEs to all services found in a scan (concurrent)."""
+        all_services = [
+            svc
+            for host in getattr(scan_summary, "hosts", [])
+            for svc in getattr(host, "services", [])
+        ]
+        if not all_services:
+            return []
+
         matches: List[VulnerabilityMatch] = []
-        hosts = getattr(scan_summary, "hosts", [])
-        for host in hosts:
-            for svc in getattr(host, "services", []):
-                svc_name = getattr(svc, "product", "") or getattr(svc, "service_name", "")
-                svc_version = getattr(svc, "version", "")
-                port = getattr(svc, "port", 0)
-                protocol = getattr(svc, "protocol", "tcp")
-                cpe = getattr(svc, "cpe", "")
-                logger.info("[NETRIX] Checking CVEs for %s %s on port %d", svc_name, svc_version, port)
-                cve_list = self.match_service_to_cves(svc_name, svc_version, cpe)
-                nse_scripts = getattr(svc, "nse_scripts", {})
-                nse_findings: List[str] = []
-                if nse_scripts:
-                    nse_cves = self.parse_nse_vulnerabilities(nse_scripts)
-                    existing_ids = {c.cve_id for c in cve_list}
-                    for nc in nse_cves:
-                        if nc.cve_id not in existing_ids:
-                            cve_list.append(nc)
-                            existing_ids.add(nc.cve_id)
-                    nse_findings = list(nse_scripts.keys())
-                if not cve_list:
-                    continue
-                highest_cvss = max((c.cvss_score for c in cve_list), default=0.0)
-                match = VulnerabilityMatch(
-                    service_name=svc_name,
-                    service_version=svc_version,
-                    port=port,
-                    protocol=protocol,
-                    cve_details=cve_list,
-                    nse_findings=nse_findings,
-                    total_vulnerabilities=len(cve_list),
-                    highest_severity=self._score_to_severity(highest_cvss),
-                    highest_cvss=highest_cvss,
-                )
-                matches.append(match)
-                for cve in cve_list:
-                    logger.info(
-                        "[NETRIX] CVE Found: %s | Severity: %s | Score: %.1f",
-                        cve.cve_id, cve.severity, cve.cvss_score,
-                    )
+        max_workers = min(8, len(all_services))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(self._match_one_service, svc): svc for svc in all_services}
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    if result:
+                        matches.append(result)
+                except Exception as exc:
+                    logger.warning("[NETRIX] Service match error: %s", exc)
         return matches
 
     # ─────────────────────────────────────
@@ -542,7 +633,27 @@ class CVEEngine:
         name_first = name_lower.split()[0] if name_lower else ""
         lookup_short = f"{name_first} {version_lower}".strip() if name_first and name_first != name_lower else ""
 
-        # 1. Well-known vulnerable services
+        # 1. NVD CPE search — online, most precise (nmap-provided CPE string)
+        if cpe:
+            try:
+                for cr in self.search_cves_by_cpe(cpe):
+                    if cr.cve_id not in seen_ids:
+                        results.append(cr)
+                        seen_ids.add(cr.cve_id)
+            except Exception as exc:
+                logger.debug("[NETRIX] CPE search failed: %s", exc)
+
+        # 2. NVD keyword search — online, broad match by product+version
+        if lookup_key:
+            try:
+                for kr in self.search_cves_by_keyword(lookup_key, max_results=10):
+                    if kr.cve_id not in seen_ids:
+                        results.append(kr)
+                        seen_ids.add(kr.cve_id)
+            except Exception as exc:
+                logger.debug("[NETRIX] Keyword search failed: %s", exc)
+
+        # 3. Well-known vulnerable services — instant lookup for critical exploits
         for key, cve_ids in WELL_KNOWN_VULNERABLE_SERVICES.items():
             if key in (lookup_key, lookup_short, name_lower, name_first) or \
                name_lower.startswith(key) or (name_first and name_first == key.split()[0] and version_lower and version_lower[:3] in key):
@@ -553,53 +664,30 @@ class CVEEngine:
                             results.append(detail)
                             seen_ids.add(cid)
 
-        # 2. Offline DB fuzzy match — also match on first word of product name
-        for cve_id, cve_data in self._offline_db.items():
-            if cve_id in seen_ids:
-                continue
-            affected = cve_data.get("affected", [])
-            desc_lower = cve_data.get("description", "").lower()
-            matched = False
-            for af in affected:
-                af_lower = af.lower()
-                if name_lower in af_lower or lookup_key in af_lower:
-                    matched = True
-                    break
-                # Partial: first word of product matches affected, and version matches
-                if name_first and name_first in af_lower:
-                    if not version_lower or version_lower in af_lower or version_lower[:3] in af_lower:
+        # 4. Offline DB fuzzy match — fallback when NVD returned nothing
+        if not results:
+            for cve_id, cve_data in self._offline_db.items():
+                if cve_id in seen_ids:
+                    continue
+                affected = cve_data.get("affected", [])
+                desc_lower = cve_data.get("description", "").lower()
+                matched = False
+                for af in affected:
+                    af_lower = af.lower()
+                    if name_lower in af_lower or lookup_key in af_lower:
                         matched = True
                         break
-            if not matched and lookup_key and lookup_key in desc_lower:
-                matched = True
-            if not matched and name_first and version_lower and name_first in desc_lower and version_lower[:3] in desc_lower:
-                matched = True
-            if matched:
-                detail = self._offline_to_cve_detail(cve_id, cve_data)
-                results.append(detail)
-                seen_ids.add(cve_id)
-
-        # 3. CPE-based NVD search
-        if cpe:
-            try:
-                cpe_results = self.search_cves_by_cpe(cpe)
-                for cr in cpe_results:
-                    if cr.cve_id not in seen_ids:
-                        results.append(cr)
-                        seen_ids.add(cr.cve_id)
-            except Exception as exc:
-                logger.debug("[NETRIX] CPE search failed: %s", exc)
-
-        # 4. Keyword NVD search
-        if lookup_key:
-            try:
-                kw_results = self.search_cves_by_keyword(lookup_key, max_results=5)
-                for kr in kw_results:
-                    if kr.cve_id not in seen_ids:
-                        results.append(kr)
-                        seen_ids.add(kr.cve_id)
-            except Exception as exc:
-                logger.debug("[NETRIX] Keyword search failed: %s", exc)
+                    if name_first and name_first in af_lower:
+                        if not version_lower or version_lower in af_lower or version_lower[:3] in af_lower:
+                            matched = True
+                            break
+                if not matched and lookup_key and lookup_key in desc_lower:
+                    matched = True
+                if not matched and name_first and version_lower and name_first in desc_lower and version_lower[:3] in desc_lower:
+                    matched = True
+                if matched:
+                    results.append(self._offline_to_cve_detail(cve_id, cve_data))
+                    seen_ids.add(cve_id)
 
         results.sort(key=lambda c: c.cvss_score, reverse=True)
         return results

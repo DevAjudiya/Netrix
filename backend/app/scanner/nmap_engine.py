@@ -54,64 +54,105 @@ CRITICAL_PORTS: List[int] = [
 # ─────────────────────────────────────────
 SCAN_PROFILES = {
     # ── Quick ─────────────────────────────────────────────────────
-    # Top-1000 ports, moderate speed, version + key banners.
-    # Good for a first look at a host without being too noisy.
+    # Top-100 most common ports only. Maximum speed (T4, min-rate 3000).
+    # Minimal version probing (intensity 3). Three scripts: identify the
+    # service name, HTTP title, SSH host key.
+    # Goal: "What is running here?" answered in under 2 minutes.
     "quick": {
-        "phase1": "-sS -Pn -T4 --open --top-ports 1000 --min-rate 500 --max-retries 2",
-        "phase2_flags": "-sS -sV --version-intensity 7 -Pn -T4 --open",
-        "phase2_scripts": "--script=banner,http-title,http-server-header,ssh-hostkey,ftp-anon",
+        "phase1": "-sS -Pn -T4 --open --top-ports 100 --min-rate 3000 --max-retries 1",
+        "phase2_flags": "-sS -sV --version-intensity 3 -Pn -T4 --open",
+        "phase2_scripts": "--script=banner,http-title,ssh-hostkey",
         "os_detect": False,
-        "p1_timeout": "120s",
-        "p2_timeout": "300s",
-        "time": "2-5 min",
+        "p1_timeout": "60s",
+        "p2_timeout": "120s",
+        "time": "1-2 min",
     },
     # ── Stealth ────────────────────────────────────────────────────
-    # Ports 1-1000, slow T2 timing to minimise IDS/firewall triggers.
-    # Banner script only — minimal script footprint.
+    # IDS/firewall-evasion focused. Key differences vs other scans:
+    #   -f          fragment IP packets → evades deep-packet inspection
+    #   -T2         slow paranoid timing (500ms between probes)
+    #   --scan-delay throttles packet rate further
+    #   --source-port 443  spoofs HTTPS source → passes through many firewalls
+    #   --data-length 16   adds random padding → breaks signature matching
+    #   -sT phase2  TCP-connect (no raw socket) → harder to distinguish from legit traffic
+    # Ports 1-1024 only (common services), banner script only (minimal footprint).
+    # Goal: "Scan without triggering IDS alerts."
     "stealth": {
-        "phase1": "-sS -Pn -T2 --open -p 1-1000 --min-rate 100 --max-retries 3",
-        "phase2_flags": "-sT -sV --version-intensity 5 -Pn -T2 --open",
+        "phase1": (
+            "-sS -f -Pn -T2 --open -p 1-1024 "
+            "--scan-delay 500ms --source-port 443 --data-length 16 --max-retries 2"
+        ),
+        "phase2_flags": (
+            "-sT -sV --version-intensity 3 -Pn -T2 --open "
+            "--source-port 443 --data-length 16"
+        ),
         "phase2_scripts": "--script=banner",
         "os_detect": False,
-        "p1_timeout": "300s",
+        "p1_timeout": "600s",
         "p2_timeout": "600s",
-        "time": "5-10 min",
+        "time": "8-15 min",
     },
     # ── Full ───────────────────────────────────────────────────────
-    # All 65 535 TCP ports.  Phase 1 is fast; Phase 2 adds OS + rich scripts.
+    # Every TCP port (1-65535). Finds services on non-standard ports that
+    # Quick/Stealth miss entirely. Maximum version detection (intensity 9).
+    # OS fingerprinting. Comprehensive scripts reveal:
+    #   ssl-cert / ssl-enum-ciphers  → TLS cert details + weak cipher suites
+    #   smb-security-mode / smb-os-discovery → Windows/Samba info
+    #   smb2-security-mode  → SMBv2 signing status
+    #   mysql-info          → MySQL server info without auth
+    #   rdp-enum-encryption → RDP encryption level
+    #   snmp-info           → SNMP system description (if port 161 open)
+    #   imap/pop3-capabilities → mail server feature list
+    # Goal: "Complete inventory of every service on every TCP port."
     "full": {
-        "phase1": "-sS -Pn -T4 --open -p 1-65535 --min-rate 1000 --max-retries 2",
+        "phase1": "-sS -Pn -T4 --open -p 1-65535 --min-rate 2000 --max-retries 2",
         "phase2_flags": "-sS -sV --version-intensity 9 -O -Pn -T4 --open",
         "phase2_scripts": (
             "--script=banner,http-title,http-server-header,http-methods,"
-            "ssh-hostkey,ftp-anon,ssl-cert,smtp-commands,dns-recursion"
+            "ssh-hostkey,ftp-anon,ssl-cert,ssl-enum-ciphers,"
+            "smtp-commands,dns-recursion,"
+            "smb-security-mode,smb-os-discovery,smb2-security-mode,"
+            "mysql-info,rdp-enum-encryption,"
+            "imap-capabilities,pop3-capabilities,snmp-info"
         ),
         "os_detect": True,
-        "p1_timeout": "600s",
-        "p2_timeout": "900s",
-        "time": "10-20 min",
+        "p1_timeout": "900s",
+        "p2_timeout": "600s",
+        "time": "15-30 min",
     },
     # ── Aggressive ─────────────────────────────────────────────────
-    # Top-10 000 ports with the full NSE default-script suite + OS detection.
+    # Top-10 000 ports at T5 (insane) speed. Uses nmap -A which enables
+    # OS detection + version detection + default NSE scripts + traceroute
+    # simultaneously. Additional scripts push the info gathering further:
+    #   http-enum           → discovers hidden web directories/files
+    #   ftp-bounce          → tests FTP PORT command abuse
+    #   dns-zone-transfer   → attempts AXFR against DNS servers
+    #   smtp-open-relay     → tests for open mail relay
+    #   mysql-empty-password → checks for auth-less MySQL
+    #   vnc-info            → VNC server details
+    # Goal: "Maximum information extraction — internal pentest, noise is fine."
     "aggressive": {
-        "phase1": "-sS -Pn -T4 --open --top-ports 10000 --min-rate 1000 --max-retries 2",
-        "phase2_flags": "-sS -sV --version-intensity 9 -O -Pn -T4 --open",
+        "phase1": "-sS -Pn -T5 --open --top-ports 10000 --min-rate 5000 --max-retries 2",
+        "phase2_flags": "-sS -A -sV --version-intensity 9 -Pn -T5 --open",
         "phase2_scripts": (
-            "-sC --script=banner,http-title,http-server-header,ftp-anon,"
-            "ssh-hostkey,ssl-cert,smtp-commands,dns-recursion,"
-            "smtp-open-relay,http-shellshock"
+            "--script=banner,http-title,http-server-header,http-methods,http-enum,"
+            "ftp-anon,ftp-bounce,ssh-hostkey,ssl-cert,ssl-enum-ciphers,"
+            "smb-security-mode,smb-os-discovery,smb2-security-mode,smb2-capabilities,"
+            "smtp-commands,smtp-open-relay,dns-recursion,dns-zone-transfer,"
+            "http-shellshock,mysql-info,mysql-empty-password,"
+            "rdp-enum-encryption,vnc-info,snmp-info"
         ),
         "os_detect": True,
-        "p1_timeout": "300s",
+        "p1_timeout": "180s",
         "p2_timeout": "600s",
-        "time": "5-15 min",
+        "time": "5-12 min",
     },
     # ── Vulnerability ──────────────────────────────────────────────
-    # Phase 1 (port discovery) + Phase 2 (scripts on open ports only)
-    # Actual args are built dynamically in _run_vulnerability_scan().
+    # Dedicated CVE-focused two-phase scan.  Actual args built dynamically
+    # in _run_vulnerability_scan() using the expanded _VULN_SCRIPTS list.
     "vulnerability": {
         "args": "",
-        "time": "10-20 min",
+        "time": "10-25 min",
     },
 }
 
@@ -125,13 +166,60 @@ SCAN_ESTIMATED_SECONDS = {
     "vulnerability": 900,
 }
 
-# Targeted NSE scripts only — no heavy "vuln" category (offline DB covers CVEs).
-# Each script has a known fast execution time on remote hosts.
-_VULN_SCRIPTS = (
-    "banner,http-headers,http-title,http-server-header,ftp-anon,ssh-hostkey,"
-    "ssl-heartbleed,ssl-poodle,smb-vuln-ms17-010,smb-vuln-ms08-067,http-shellshock,"
-    "dns-recursion,smtp-open-relay"
-)
+# NSE scripts for the Vulnerability scan type.
+# Grouped by protocol/family so each service gets relevant CVE checks.
+# Only scripts confirmed present on this system are included.
+_VULN_SCRIPTS = ",".join([
+    # ── Banners / headers (always run first — populates service name) ──
+    "banner", "http-headers", "http-title", "http-server-header",
+    # ── SSL / TLS ──────────────────────────────────────────────────────
+    "ssl-heartbleed",           # CVE-2014-0160  Heartbleed
+    "ssl-poodle",               # CVE-2014-3566  POODLE
+    "ssl-ccs-injection",        # CVE-2014-0224  ChangeCipherSpec injection
+    "ssl-dh-params",            # Logjam / weak DH parameters
+    "ssl-enum-ciphers",         # Weak cipher detection (RC4, export, NULL, etc.)
+    "ssl-cert",                 # Certificate details (expiry, CN, issuer)
+    # ── SMB ───────────────────────────────────────────────────────────
+    "smb-vuln-ms17-010",        # CVE-2017-0144  EternalBlue
+    "smb-vuln-ms08-067",        # CVE-2008-4250  NetAPI
+    "smb-vuln-ms10-061",        # CVE-2010-2729  Print Spooler
+    "smb-vuln-ms06-025",        # CVE-2006-2370  RASMAN
+    "smb-vuln-ms07-029",        # CVE-2007-1748  DNS
+    "smb-vuln-cve2009-3103",    # CVE-2009-3103  SMBv2
+    "smb-vuln-ms10-054",        # CVE-2010-2550  SMB pool overflow
+    "smb-vuln-conficker",       # Conficker worm detection
+    "smb-security-mode",        # SMBv1 signing / guest account info
+    "smb-os-discovery",         # OS name, domain, workgroup via SMB
+    "smb2-security-mode",       # SMBv2 signing enforcement
+    # ── HTTP ──────────────────────────────────────────────────────────
+    "http-shellshock",          # CVE-2014-6271  Shellshock in CGI
+    "http-vuln-cve2017-5638",   # CVE-2017-5638  Apache Struts RCE
+    "http-vuln-cve2014-3704",   # CVE-2014-3704  Drupalgeddon
+    "http-vuln-cve2015-1635",   # CVE-2015-1635  IIS HTTP.sys RCE
+    "http-vuln-cve2012-1823",   # CVE-2012-1823  PHP-CGI arg injection
+    "http-vuln-cve2011-3192",   # CVE-2011-3192  Apache range DoS
+    "http-enum",                # Common web paths/dirs discovery
+    # ── FTP ───────────────────────────────────────────────────────────
+    "ftp-vsftpd-backdoor",      # CVE-2011-2523  vsftpd 2.3.4 backdoor
+    "ftp-proftpd-backdoor",     # CVE-2010-4221  ProFTPD backdoor
+    "ftp-anon",                 # Anonymous FTP login allowed
+    "ftp-bounce",               # FTP PORT bounce attack
+    # ── RDP ───────────────────────────────────────────────────────────
+    "rdp-vuln-ms12-020",        # CVE-2012-0152  RDP DoS
+    "rdp-enum-encryption",      # RDP encryption level (NLA vs CredSSP)
+    # ── DNS ───────────────────────────────────────────────────────────
+    "dns-recursion",            # Open DNS recursion (amplification risk)
+    "dns-zone-transfer",        # AXFR zone transfer allowed
+    # ── SMTP ──────────────────────────────────────────────────────────
+    "smtp-open-relay",          # Open mail relay (spam/phishing risk)
+    "smtp-commands",            # Supported SMTP verbs
+    # ── MySQL ─────────────────────────────────────────────────────────
+    "mysql-empty-password",     # MySQL accessible with no password
+    "mysql-info",               # MySQL version and capabilities
+    # ── VNC / Other ───────────────────────────────────────────────────
+    "vnc-info",                 # VNC authentication type
+    "ssh-hostkey",              # SSH host key + algorithm
+])
 
 
 def _cvss_to_severity(cvss: float) -> str:
@@ -663,12 +751,19 @@ class NmapEngine:
                     scan_id, target,
                 )
                 nm_retry = nmap.PortScanner()
+                # Preserve the timing/flags of the active scan type so
+                # stealth retry stays stealth (T2) and aggressive stays fast (T5).
+                retry_timing = "-T2" if "-T2" in p2_flags else (
+                    "-T5" if "-T5" in p2_flags else "-T4"
+                )
+                retry_intensity = "3" if "intensity 3" in p2_flags else "7"
+                retry_source = "--source-port 443" if "--source-port 443" in p2_flags else ""
                 retry_args = (
-                    f"-sT -sV --version-intensity 9 -Pn -T4 --open "
-                    f"-p {ports_str} --script=banner,http-title,"
+                    f"-sT -sV --version-intensity {retry_intensity} -Pn {retry_timing} --open "
+                    f"-p {ports_str} {retry_source} --script=banner,http-title,"
                     f"http-server-header,ssh-hostkey,ftp-anon "
                     f"--host-timeout {p2_to} --script-timeout 10s"
-                )
+                ).strip()
                 _stop_p2b = threading.Event()
                 if callback:
                     threading.Thread(

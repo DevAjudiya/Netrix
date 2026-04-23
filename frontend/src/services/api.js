@@ -115,7 +115,7 @@ export const adminAPI = {
   listLogs: (params) => api.get('/admin/logs', { params }),
   health: () => api.get('/admin/health'),
   metrics: (hours = 24) => api.get('/admin/metrics', { params: { hours } }),
-  cveStatus: () => api.get('/admin/cve/status'),
+  cveStatus: (force = false) => api.get('/admin/cve/status', { params: force ? { force: true } : {} }),
   cveSync: () => api.post('/admin/cve/sync'),
   cveRematch: () => api.post('/admin/cve/rematch'),
   cveList: (params) => api.get('/admin/cve/list', { params })

@@ -180,6 +180,8 @@ class CVEStatusResponse(BaseModel):
     last_sync: Optional[datetime] = None
     cves_added_last_sync: int = 0
     nvd_api_online: bool
+    nvd_last_checked: Optional[datetime] = None
+    nvd_check_pending: bool = False
     sync_in_progress: bool
 
 

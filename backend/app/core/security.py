@@ -10,7 +10,17 @@ from typing import Any, Dict, Optional
 
 from fastapi import Depends
 from fastapi.security import OAuth2PasswordBearer
+import bcrypt as _bcrypt
 from jose import JWTError, jwt
+
+# passlib 1.7.x is incompatible with bcrypt>=4.0 — the detect_wrap_bug probe
+# hashes a 73-byte password which bcrypt 4.x rejects. Patch hashpw to silently
+# truncate, which matches real bcrypt behaviour (it has always capped at 72 bytes).
+_orig_hashpw = _bcrypt.hashpw
+def _patched_hashpw(password: bytes, salt: bytes) -> bytes:
+    return _orig_hashpw(password[:72], salt)
+_bcrypt.hashpw = _patched_hashpw
+
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 

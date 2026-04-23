@@ -727,7 +727,7 @@ def sync_nvd_database() -> Dict:
                 "lastModEndDate": end_str,
                 "resultsPerPage": 100,
             },
-            timeout=30,
+            timeout=(5, 30),
         )
 
         if resp.status_code == 200:
