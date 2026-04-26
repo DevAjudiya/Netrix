@@ -502,6 +502,23 @@ class NmapEngine:
 
         started_at = datetime.now(timezone.utc)
 
+        # ── DNS pre-validation for domain targets ─────────────────
+        # Catch DNS failures early so the user gets a clear error
+        # instead of a "completed" scan with 0 hosts.
+        import re as _re
+        _ip_re = _re.compile(
+            r'^(\d{1,3}\.){3}\d{1,3}(/\d{1,2})?$'
+        )
+        if not _ip_re.match(target):
+            import socket as _socket
+            try:
+                _socket.getaddrinfo(target, None)
+            except _socket.gaierror:
+                raise RuntimeError(
+                    f"Cannot resolve hostname '{target}'. "
+                    "Check the domain name and your network connection."
+                )
+
         # ── Vulnerability scan: dedicated two-phase implementation ──
         if scan_type == ScanType.VULNERABILITY and not custom_args:
             return self._run_vulnerability_scan(
